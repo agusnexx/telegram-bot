@@ -4,5 +4,4 @@ openai-whisper
 playwright
 imageio-ffmpeg
 yt-dlp
-torch
 numpy
