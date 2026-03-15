@@ -1,7 +1,5 @@
 python-telegram-bot==20.7
 anthropic
-openai-whisper
-playwright
-imageio-ffmpeg
+faster-whisper
 yt-dlp
-numpy
+requests
