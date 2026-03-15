@@ -10,13 +10,12 @@ from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filte
 import anthropic
 import requests
 
-TELEGRAM_TOKEN = "8107809274:AAHAaxUvp6sTVbPzJ8JQV5vx333ChOZou9E"
-ANTHROPIC_API_KEY = "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"
-
-TF_NOTION_TOKEN = "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"
-TF_PAGE_ID = "307ebaa28b978015a033dadaff979987"
-TV_NOTION_TOKEN = "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"
-TV_PAGE_ID = "307ebaa28b978023bc8ceb933a58e6b7"
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+TF_NOTION_TOKEN = os.environ["TF_NOTION_TOKEN"]
+TF_PAGE_ID = os.environ["TF_PAGE_ID"]
+TV_NOTION_TOKEN = os.environ["TV_NOTION_TOKEN"]
+TV_PAGE_ID = os.environ["TV_PAGE_ID"]
 
 BASE_DIR = Path(__file__).parent
 BRIEF_PROMPT_PATH = BASE_DIR / "BRIEF_PROMPT.md"
