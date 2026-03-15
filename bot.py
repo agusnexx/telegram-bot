@@ -35,9 +35,11 @@ def extract_urls_and_tag(text):
 
 def download_audio(url: str, output_path: str):
     result = subprocess.run([
-        "yt-dlp", "-x", "--audio-format", "mp3",
-        "-o", output_path, "--no-playlist",
-        "--user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "python3", "-m", "yt_dlp",
+        "-x", "--audio-format", "mp3",
+        "-o", output_path,
+        "--no-playlist",
+        url
     ], capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp error: {result.stderr[-500:]}")
