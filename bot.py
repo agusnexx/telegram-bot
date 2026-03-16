@@ -59,6 +59,8 @@ def download_audio(url: str, output_path: str) -> str:
     tmpdir = os.path.dirname(output_path)
 
     cookies_file = None
+    ig_username = os.environ.get("INSTAGRAM_USERNAME", "")
+    ig_password = os.environ.get("INSTAGRAM_PASSWORD", "")
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
 
@@ -83,7 +85,9 @@ def download_audio(url: str, output_path: str) -> str:
             "--merge-output-format", "mp4",
             "--sleep-requests", "3",
         ]
-        if cookies_file:
+        if ig_username and ig_password:
+            cmd += ["--username", ig_username, "--password", ig_password]
+        elif cookies_file:
             cmd += ["--cookies", cookies_file]
         cmd.append(url)
 
