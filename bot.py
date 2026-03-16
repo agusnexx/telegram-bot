@@ -127,16 +127,21 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
             i += 1
             continue
 
-        # Heading 2 — check if it's a toggle section
-        if stripped.startswith('## '):
-            label = stripped[3:].strip()
-            if label in ('Original Script', 'Adapted Script'):
+        # Heading 2 or 3 — check if it's a toggle section
+        TOGGLE_LABELS = ('original script', 'adapted script')
+
+        if stripped.startswith('## ') or stripped.startswith('### '):
+            prefix_len = 3 if stripped.startswith('## ') else 4
+            label_raw = stripped[prefix_len:].strip().rstrip(':')
+            if label_raw.lower() in TOGGLE_LABELS:
+                label = label_raw if label_raw[0].isupper() else label_raw.title()
                 children = []
                 i += 1
                 while i < len(lines):
                     child_stripped = lines[i].strip()
-                    if child_stripped.startswith('## ') or child_stripped == '---' or \
-                       child_stripped in ('- Original Script', '- Adapted Script'):
+                    if child_stripped.startswith('## ') or child_stripped.startswith('### ') or \
+                       child_stripped == '---' or \
+                       child_stripped.lower().lstrip('- ').rstrip(':') in TOGGLE_LABELS:
                         break
                     if child_stripped:
                         children.append(paragraph_block(child_stripped))
@@ -151,19 +156,16 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
                     }
                 })
                 continue
-            blocks.append({
-                "type": "heading_2",
-                "heading_2": {"rich_text": [rich_text(label)]}
-            })
-            i += 1
-            continue
-
-        # Heading 3
-        if stripped.startswith('### '):
-            blocks.append({
-                "type": "heading_3",
-                "heading_3": {"rich_text": [rich_text(stripped[4:])]}
-            })
+            if prefix_len == 3:
+                blocks.append({
+                    "type": "heading_2",
+                    "heading_2": {"rich_text": [rich_text(label_raw)]}
+                })
+            else:
+                blocks.append({
+                    "type": "heading_3",
+                    "heading_3": {"rich_text": [rich_text(label_raw)]}
+                })
             i += 1
             continue
 
@@ -182,16 +184,16 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
             i += 1
             continue
 
-        # Toggle: Original Script / Adapted Script
-        if stripped == '- Original Script' or stripped == '- Adapted Script':
-            label = stripped[2:]
+        # Toggle: "- Original Script" or "- Adapted Script" list style
+        if stripped.startswith('- ') and stripped[2:].strip().lower().rstrip(':') in TOGGLE_LABELS:
+            label = stripped[2:].strip().rstrip(':')
             children = []
             i += 1
             while i < len(lines):
                 child_stripped = lines[i].strip()
-                # Stop if we hit another toggle or section
-                if child_stripped in ('- Original Script', '- Adapted Script') or \
-                   child_stripped.startswith('## ') or child_stripped == '---':
+                if child_stripped.startswith('## ') or child_stripped.startswith('### ') or \
+                   child_stripped == '---' or \
+                   (child_stripped.startswith('- ') and child_stripped[2:].strip().lower().rstrip(':') in TOGGLE_LABELS):
                     break
                 if child_stripped:
                     children.append(paragraph_block(child_stripped))
