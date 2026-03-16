@@ -460,7 +460,7 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for idx, url in enumerate(batch):
             if idx > 0:
-                await asyncio.sleep(5)
+                await asyncio.sleep(15)
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, process_video, url, tag)
