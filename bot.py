@@ -60,6 +60,7 @@ def download_audio(url: str, output_path: str):
         "-x",
         "--audio-format", "wav",
         "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
+        "--sleep-requests", "2",
     ]
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
@@ -457,7 +458,9 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ Processing batch {batch_num}/{total_batches}: links {batch_start + 1}-{batch_start + len(batch)}..."
         )
 
-        for url in batch:
+        for idx, url in enumerate(batch):
+            if idx > 0:
+                await asyncio.sleep(5)
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, process_video, url, tag)
