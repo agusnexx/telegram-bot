@@ -291,12 +291,14 @@ def extract_title(brief: str) -> str:
     for line in brief.split('\n'):
         if line.startswith('TITLE:'):
             return line[6:].strip()
+        if re.match(r'^# (?!#)', line):
+            return line[2:].strip()
     return "Untitled"
 
 
 def strip_title_line(brief: str) -> str:
     lines = brief.split('\n')
-    filtered = [l for l in lines if not l.startswith('TITLE:')]
+    filtered = [l for l in lines if not l.startswith('TITLE:') and not re.match(r'^# (?!#)', l)]
     return '\n'.join(filtered)
 
 
@@ -315,12 +317,23 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
         "Notion-Version": "2022-06-28"
     }
 
+    # Extract toggle children — Notion API doesn't reliably persist nested
+    # children in the page-creation call, so we append them separately.
+    toggle_children = {}  # position -> children list
+    flat_blocks = []
+    for block in blocks:
+        if block.get("type") == "toggle":
+            children = block["toggle"].pop("children", [])
+            if children:
+                toggle_children[len(flat_blocks)] = children
+        flat_blocks.append(block)
+
     page_data = {
         "parent": {"page_id": parent_id},
         "properties": {
             "title": {"title": [{"text": {"content": page_title}}]}
         },
-        "children": blocks[:100]
+        "children": flat_blocks[:100]
     }
 
     resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
@@ -328,15 +341,45 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
     page = resp.json()
     page_id = page["id"]
 
-    # Upload remaining blocks if > 100
-    if len(blocks) > 100:
-        for start in range(100, len(blocks), 100):
-            chunk = blocks[start:start + 100]
+    # Upload remaining top-level blocks if > 100
+    if len(flat_blocks) > 100:
+        for start in range(100, len(flat_blocks), 100):
+            chunk = flat_blocks[start:start + 100]
             requests.patch(
                 f"https://api.notion.com/v1/blocks/{page_id}/children",
                 headers=headers,
                 json={"children": chunk}
             )
+
+    # Append toggle children separately by fetching block IDs from Notion
+    if toggle_children:
+        all_page_blocks = []
+        cursor = None
+        while True:
+            params = {"page_size": 100}
+            if cursor:
+                params["start_cursor"] = cursor
+            r = requests.get(
+                f"https://api.notion.com/v1/blocks/{page_id}/children",
+                headers=headers, params=params
+            )
+            r.raise_for_status()
+            data = r.json()
+            all_page_blocks.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+
+        for pos, children in toggle_children.items():
+            if pos < len(all_page_blocks):
+                toggle_id = all_page_blocks[pos]["id"]
+                for start in range(0, len(children), 100):
+                    chunk = children[start:start + 100]
+                    requests.patch(
+                        f"https://api.notion.com/v1/blocks/{toggle_id}/children",
+                        headers=headers,
+                        json={"children": chunk}
+                    )
 
     return f"https://notion.so/{page_id.replace('-', '')}"
 
