@@ -20,6 +20,8 @@ Your output must follow this EXACT structure in markdown:
 
 ---
 
+TITLE: [3-6 word title summarizing the video hook — e.g. "Fix Your Attention Span Now" or "Stop Scrolling Before Bed"]
+
 ## VIDEO FORMAT
 
 > ❗ Reference video: REFERENCE_VIDEO_URL

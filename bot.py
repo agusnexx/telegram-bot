@@ -235,12 +235,15 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
 
 def extract_title(brief: str) -> str:
     for line in brief.split('\n'):
-        if line.startswith('# '):
-            return line[2:].strip()
-    for line in brief.split('\n'):
-        if line.strip() and not line.startswith('#') and not line.startswith('>') and not line.startswith('-'):
-            return line.strip()[:80]
+        if line.startswith('TITLE:'):
+            return line[6:].strip()
     return "Untitled"
+
+
+def strip_title_line(brief: str) -> str:
+    lines = brief.split('\n')
+    filtered = [l for l in lines if not l.startswith('TITLE:')]
+    return '\n'.join(filtered)
 
 
 def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
@@ -250,7 +253,8 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
     title = extract_title(brief)
     page_title = f"Idea ({tag}) - {title}"
 
-    blocks = markdown_to_notion_blocks(brief, video_url)
+    clean_brief = strip_title_line(brief)
+    blocks = markdown_to_notion_blocks(clean_brief, video_url)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
