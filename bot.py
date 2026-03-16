@@ -503,6 +503,31 @@ def process_video(url: str, tag: str) -> dict:
     return {"url": page_url, "hook": hook}
 
 
+def process_video_file(file_path: str, tag: str, original_filename: str) -> dict:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_path = os.path.join(tmpdir, "audio.wav")
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", file_path, "-vn", "-ar", "16000", "-ac", "1", audio_path, "-y"
+        ], capture_output=True, text=True)
+        if not os.path.exists(audio_path):
+            raise RuntimeError(f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}")
+
+        transcript_data = transcribe_audio(audio_path)
+        transcript = transcript_data["content"]
+
+    brief = generate_brief(transcript, original_filename)
+    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript)
+
+    hook = ""
+    for line in brief.split('\n'):
+        s = line.strip()
+        if s and not s.startswith('#') and not s.startswith('>') and not s.startswith('-') and not s.startswith('TITLE:'):
+            hook = s[:120]
+            break
+
+    return {"url": page_url, "hook": hook}
+
+
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     urls, tag = extract_urls_and_tag(texto)
@@ -539,6 +564,40 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Error con {url}:\n{str(e)[:300]}\n\n{tb[-600:]}")
 
 
+async def video_responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    caption = update.message.caption or ""
+    tag = None
+    if re.search(r'\bTF\b', caption):
+        tag = 'TF'
+    elif re.search(r'\bTV\b', caption):
+        tag = 'TV'
+
+    if not tag:
+        await update.message.reply_text("Mandame el video con caption TF o TV.")
+        return
+
+    video = update.message.video or update.message.document
+    await update.message.reply_text("⏳ Descargando y procesando video...")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file = await context.bot.get_file(video.file_id)
+        file_path = os.path.join(tmpdir, "video.mp4")
+        await file.download_to_drive(file_path)
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, process_video_file, file_path, tag, "video_upload")
+            await update.message.reply_text(
+                f"✅ Brief published: {result['url']}\n"
+                f"Preview: {result['hook']}"
+            )
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            await update.message.reply_text(f"❌ Error:\n{str(e)[:300]}\n\n{tb[-600:]}")
+
+
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
+app.add_handler(MessageHandler((filters.VIDEO | filters.Document.VIDEO) & ~filters.COMMAND, video_responder))
 app.run_polling()
