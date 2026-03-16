@@ -102,6 +102,34 @@ def download_audio(url: str, output_path: str) -> str:
             continue
         dl_file = files[0]
 
+        # Check if file has audio stream
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=codec_type", "-of", "csv=p=0", dl_file],
+            capture_output=True, text=True
+        )
+        has_audio = "audio" in probe.stdout
+
+        if not has_audio:
+            # Re-download audio-only stream
+            audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
+            audio_cmd = [
+                "python3", "-m", "yt_dlp",
+                "-o", audio_dl,
+                "--no-playlist",
+                "--format", "bestaudio",
+                "--sleep-requests", "3",
+            ]
+            if ig_username and ig_password:
+                audio_cmd += ["--username", ig_username, "--password", ig_password]
+            elif cookies_file:
+                audio_cmd += ["--cookies", cookies_file]
+            audio_cmd.append(url)
+            subprocess.run(audio_cmd, capture_output=True, text=True, timeout=180)
+            audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
+            if audio_files:
+                dl_file = audio_files[0]
+
         ffmpeg_result = subprocess.run([
             "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
         ], capture_output=True, text=True)
