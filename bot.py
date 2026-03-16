@@ -55,7 +55,7 @@ def get_cookies_file() -> str:
 def download_audio(url: str, output_path: str):
     cmd = [
         "python3", "-m", "yt_dlp",
-        "-x", "--audio-format", "mp3",
+        "-x",
         "-o", output_path,
         "--no-playlist",
     ]
@@ -343,11 +343,15 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
 
 def process_video(url: str, tag: str) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
-        audio_path = os.path.join(tmpdir, "audio.mp3")
+        audio_path = os.path.join(tmpdir, "audio.%(ext)s")
         download_audio(url, audio_path)
 
-        if not os.path.exists(audio_path):
+        # Find the downloaded file (extension varies)
+        import glob
+        files = glob.glob(os.path.join(tmpdir, "audio.*"))
+        if not files:
             raise RuntimeError("Audio download failed — file not found after yt-dlp")
+        audio_path = files[0]
 
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
