@@ -343,15 +343,23 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
 
 def process_video(url: str, tag: str) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
-        audio_path = os.path.join(tmpdir, "audio.%(ext)s")
-        download_audio(url, audio_path)
+        video_path = os.path.join(tmpdir, "video.%(ext)s")
+        download_audio(url, video_path)
 
-        # Find the downloaded file (extension varies)
+        # Find the downloaded file
         import glob
-        files = glob.glob(os.path.join(tmpdir, "audio.*"))
+        files = glob.glob(os.path.join(tmpdir, "video.*"))
         if not files:
-            raise RuntimeError("Audio download failed — file not found after yt-dlp")
-        audio_path = files[0]
+            raise RuntimeError("Download failed — file not found after yt-dlp")
+        video_path = files[0]
+
+        # Extract audio with ffmpeg
+        audio_path = os.path.join(tmpdir, "audio.wav")
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", video_path, "-vn", "-ar", "16000", "-ac", "1", audio_path, "-y", "-loglevel", "quiet"
+        ], capture_output=True, text=True)
+        if not os.path.exists(audio_path):
+            raise RuntimeError(f"ffmpeg audio extraction failed: {ffmpeg_result.stderr}")
 
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
