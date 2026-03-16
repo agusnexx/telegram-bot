@@ -27,7 +27,7 @@ TITLE: [3-6 word title summarizing the video hook — e.g. "Fix Your Attention S
 > ❗ Reference video: REFERENCE_VIDEO_URL
 > ❗ Match this video's style exactly
 
-Write 2-3 lines describing: vertical 9:16, talking to camera style, setting, energy, jump cuts, text overlays. Base the energy description on the reference video specifically — do NOT use generic phrases like "put me on energy" or hardcode any vibe that only applies to one video. Always end with: "Film the app on your actual phone, captured by a second device — no screen recordings."
+Write 2-3 lines describing: vertical 9:16, talking to camera style, setting, energy, jump cuts, text overlays. Base the energy description on the reference video specifically — do NOT use generic phrases like "put me on energy" or hardcode any vibe that only applies to one video.
 
 ---
 
