@@ -406,7 +406,9 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Preview: {result['hook']}"
                 )
             except Exception as e:
-                await update.message.reply_text(f"❌ Error con {url}:\n{str(e)[:500]}")
+                import traceback
+                tb = traceback.format_exc()
+                await update.message.reply_text(f"❌ Error con {url}:\n{str(e)[:300]}\n\n{tb[-600:]}")
 
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
