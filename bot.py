@@ -34,10 +34,10 @@ def extract_urls_and_tag(text):
 
 def get_cookies_file() -> str:
     """Write Instagram cookies to a temp file if env var is set."""
+    from urllib.parse import unquote
     cookies = os.environ.get("INSTAGRAM_COOKIES", "")
     if not cookies:
         return None
-    import tempfile
     f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
     f.write("# Netscape HTTP Cookie File\n")
     cookie_pairs = {}
@@ -45,7 +45,7 @@ def get_cookies_file() -> str:
         item = item.strip()
         if '=' in item:
             name, value = item.split('=', 1)
-            cookie_pairs[name.strip()] = value.strip()
+            cookie_pairs[name.strip()] = unquote(value.strip())
     for name, value in cookie_pairs.items():
         f.write(f".instagram.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
     f.close()
