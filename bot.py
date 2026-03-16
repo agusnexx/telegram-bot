@@ -53,10 +53,45 @@ def get_cookies_file() -> str:
     return f.name
 
 
+def download_via_cobalt(url: str, output_path: str) -> bool:
+    """Try to download audio via Cobalt API. Returns True if successful."""
+    try:
+        resp = requests.post(
+            "https://api.cobalt.tools/",
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            json={"url": url, "downloadMode": "audio"},
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        download_url = data.get("url")
+        if not download_url:
+            return False
+        video_resp = requests.get(download_url, timeout=120, stream=True)
+        if video_resp.status_code != 200:
+            return False
+        raw_path = output_path.replace(".wav", ".audio_raw")
+        with open(raw_path, "wb") as f:
+            for chunk in video_resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", raw_path, "-ar", "16000", "-ac", "1", output_path, "-y"
+        ], capture_output=True, text=True)
+        return os.path.exists(output_path)
+    except Exception:
+        return False
+
+
 def download_audio(url: str, output_path: str) -> str:
     """Download and return path to extracted wav file."""
     import glob as _glob
     tmpdir = os.path.dirname(output_path)
+
+    # Try Cobalt API first for Instagram
+    if "instagram.com" in url:
+        if download_via_cobalt(url, output_path):
+            return output_path
 
     cookies_file = None
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "")
