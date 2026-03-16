@@ -57,7 +57,7 @@ def download_audio(url: str, output_path: str):
         "python3", "-m", "yt_dlp",
         "-o", output_path,
         "--no-playlist",
-        "--format", "bestaudio/best",
+        "--format", "bestaudio[ext=m4a]/bestaudio/best[acodec!=none]/best",
     ]
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
