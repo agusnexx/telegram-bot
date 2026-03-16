@@ -356,10 +356,10 @@ def process_video(url: str, tag: str) -> dict:
         # Extract audio with ffmpeg
         audio_path = os.path.join(tmpdir, "audio.wav")
         ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", video_path, "-vn", "-ar", "16000", "-ac", "1", audio_path, "-y", "-loglevel", "quiet"
+            "ffmpeg", "-i", video_path, "-ar", "16000", "-ac", "1", audio_path, "-y"
         ], capture_output=True, text=True)
         if not os.path.exists(audio_path):
-            raise RuntimeError(f"ffmpeg audio extraction failed: {ffmpeg_result.stderr}")
+            raise RuntimeError(f"ffmpeg failed (rc={ffmpeg_result.returncode}): {ffmpeg_result.stderr[-400:]}")
 
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
