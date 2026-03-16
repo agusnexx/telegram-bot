@@ -303,8 +303,9 @@ def process_video(url: str, tag: str) -> dict:
 
     hook = ""
     for line in brief.split('\n'):
-        if line.strip() and not line.startswith('#') and not line.startswith('>') and not line.startswith('-'):
-            hook = line.strip()[:120]
+        s = line.strip()
+        if s and not s.startswith('#') and not s.startswith('>') and not s.startswith('-') and not s.startswith('TITLE:'):
+            hook = s[:120]
             break
 
     return {"url": page_url, "hook": hook}
