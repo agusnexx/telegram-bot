@@ -32,14 +32,39 @@ def extract_urls_and_tag(text):
     return urls, tag
 
 
+def get_cookies_file() -> str:
+    """Write Instagram cookies to a temp file if env var is set."""
+    cookies = os.environ.get("INSTAGRAM_COOKIES", "")
+    if not cookies:
+        return None
+    import tempfile
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    f.write("# Netscape HTTP Cookie File\n")
+    cookie_pairs = {}
+    for item in cookies.split(';'):
+        item = item.strip()
+        if '=' in item:
+            name, value = item.split('=', 1)
+            cookie_pairs[name.strip()] = value.strip()
+    for name, value in cookie_pairs.items():
+        f.write(f".instagram.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
+    f.close()
+    return f.name
+
+
 def download_audio(url: str, output_path: str):
-    result = subprocess.run([
+    cmd = [
         "python3", "-m", "yt_dlp",
         "-x", "--audio-format", "mp3",
         "-o", output_path,
         "--no-playlist",
-        url
-    ], capture_output=True, text=True, timeout=180)
+    ]
+    if "instagram.com" in url:
+        cookies_file = get_cookies_file()
+        if cookies_file:
+            cmd += ["--cookies", cookies_file]
+    cmd.append(url)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp error: {result.stderr[-500:]}")
 
