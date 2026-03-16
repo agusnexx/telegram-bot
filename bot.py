@@ -158,7 +158,7 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
         if stripped.startswith('## ') or stripped.startswith('### '):
             prefix_len = 3 if stripped.startswith('## ') else 4
             label_raw = stripped[prefix_len:].strip().rstrip(':')
-            if label_raw.lower() in TOGGLE_LABELS:
+            if label_raw.lower() in TOGGLE_LABELS and not label_raw.isupper():
                 label = label_raw if label_raw[0].isupper() else label_raw.title()
                 children = []
                 i += 1
