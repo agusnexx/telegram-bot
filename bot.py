@@ -57,7 +57,9 @@ def download_audio(url: str, output_path: str):
         "python3", "-m", "yt_dlp",
         "-o", output_path,
         "--no-playlist",
-        "--format", "bestaudio[ext=m4a]/bestaudio/best[acodec!=none]/best",
+        "-x",
+        "--audio-format", "wav",
+        "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
     ]
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
@@ -413,23 +415,11 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
 
 def process_video(url: str, tag: str) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
-        video_path = os.path.join(tmpdir, "video.%(ext)s")
-        download_audio(url, video_path)
-
-        # Find the downloaded file
-        import glob
-        files = glob.glob(os.path.join(tmpdir, "video.*"))
-        if not files:
-            raise RuntimeError("Download failed — file not found after yt-dlp")
-        video_path = files[0]
-
-        # Extract audio with ffmpeg
         audio_path = os.path.join(tmpdir, "audio.wav")
-        ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", video_path, "-ar", "16000", "-ac", "1", audio_path, "-y"
-        ], capture_output=True, text=True)
+        download_audio(url, audio_path)
+
         if not os.path.exists(audio_path):
-            raise RuntimeError(f"ffmpeg failed (rc={ffmpeg_result.returncode}): {ffmpeg_result.stderr[-400:]}")
+            raise RuntimeError("Download failed — audio.wav not found after yt-dlp")
 
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
