@@ -56,12 +56,19 @@ def get_cookies_file() -> str:
 def download_via_cobalt(url: str, output_path: str) -> bool:
     """Try to download audio via Cobalt API. Returns True if successful."""
     try:
+        # Clean Instagram URL — remove tracking params
+        clean_url = re.sub(r'\?.*$', '', url.rstrip('/'))
         resp = requests.post(
             "https://api.cobalt.tools/",
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            json={"url": url, "downloadMode": "audio"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0"
+            },
+            json={"url": clean_url, "downloadMode": "audio"},
             timeout=30
         )
+        print(f"[Cobalt] status={resp.status_code} body={resp.text[:300]}")
         if resp.status_code != 200:
             return False
         data = resp.json()
@@ -79,7 +86,8 @@ def download_via_cobalt(url: str, output_path: str) -> bool:
             "ffmpeg", "-i", raw_path, "-ar", "16000", "-ac", "1", output_path, "-y"
         ], capture_output=True, text=True)
         return os.path.exists(output_path)
-    except Exception:
+    except Exception as e:
+        print(f"[Cobalt] exception: {e}")
         return False
 
 
