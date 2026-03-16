@@ -52,14 +52,17 @@ def get_cookies_file() -> str:
     return f.name
 
 
-def download_audio(url: str, output_path: str):
+def download_audio(url: str, output_path: str) -> str:
+    """Download and return path to extracted wav file."""
+    import glob as _glob
+    tmpdir = os.path.dirname(output_path)
+    dl_template = os.path.join(tmpdir, "dl.%(ext)s")
     cmd = [
         "python3", "-m", "yt_dlp",
-        "-o", output_path,
+        "-o", dl_template,
         "--no-playlist",
-        "-x",
-        "--audio-format", "wav",
-        "--postprocessor-args", "ffmpeg:-ar 16000 -ac 1",
+        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
         "--sleep-requests", "2",
     ]
     if "instagram.com" in url:
@@ -70,6 +73,18 @@ def download_audio(url: str, output_path: str):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp error: {result.stderr[-500:]}")
+
+    files = _glob.glob(os.path.join(tmpdir, "dl.*"))
+    if not files:
+        raise RuntimeError("Download failed — file not found after yt-dlp")
+    dl_file = files[0]
+
+    ffmpeg_result = subprocess.run([
+        "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
+    ], capture_output=True, text=True)
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}")
+    return output_path
 
 
 def transcribe_audio(audio_path: str) -> dict:
@@ -418,9 +433,6 @@ def process_video(url: str, tag: str) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "audio.wav")
         download_audio(url, audio_path)
-
-        if not os.path.exists(audio_path):
-            raise RuntimeError("Download failed — audio.wav not found after yt-dlp")
 
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
