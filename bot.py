@@ -4,6 +4,7 @@ import re
 import json
 import tempfile
 import subprocess
+import time
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
@@ -56,35 +57,55 @@ def download_audio(url: str, output_path: str) -> str:
     """Download and return path to extracted wav file."""
     import glob as _glob
     tmpdir = os.path.dirname(output_path)
-    dl_template = os.path.join(tmpdir, "dl.%(ext)s")
-    cmd = [
-        "python3", "-m", "yt_dlp",
-        "-o", dl_template,
-        "--no-playlist",
-        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--sleep-requests", "2",
-    ]
+
+    cookies_file = None
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
+
+    last_error = None
+    for attempt in range(3):
+        if attempt > 0:
+            time.sleep(20 * attempt)
+
+        # Clean up previous attempt files
+        for f in _glob.glob(os.path.join(tmpdir, "dl.*")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+        dl_template = os.path.join(tmpdir, "dl.%(ext)s")
+        cmd = [
+            "python3", "-m", "yt_dlp",
+            "-o", dl_template,
+            "--no-playlist",
+            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "--sleep-requests", "3",
+        ]
         if cookies_file:
             cmd += ["--cookies", cookies_file]
-    cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp error: {result.stderr[-500:]}")
+        cmd.append(url)
 
-    files = _glob.glob(os.path.join(tmpdir, "dl.*"))
-    if not files:
-        raise RuntimeError("Download failed — file not found after yt-dlp")
-    dl_file = files[0]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            last_error = result.stderr[-500:]
+            continue
 
-    ffmpeg_result = subprocess.run([
-        "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
-    ], capture_output=True, text=True)
-    if not os.path.exists(output_path):
-        raise RuntimeError(f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}")
-    return output_path
+        files = _glob.glob(os.path.join(tmpdir, "dl.*"))
+        if not files:
+            last_error = "File not found after yt-dlp"
+            continue
+        dl_file = files[0]
+
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
+        ], capture_output=True, text=True)
+        if os.path.exists(output_path):
+            return output_path
+        last_error = f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}"
+
+    raise RuntimeError(f"yt-dlp error: {last_error}")
 
 
 def transcribe_audio(audio_path: str) -> dict:
