@@ -37,12 +37,25 @@ Write 2-3 lines describing: vertical 9:16, talking to camera style, setting, ene
 
 ---
 
-The ADAPTED SCRIPT section must contain TWO parallel versions, formatted exactly like this:
+The ADAPTED SCRIPT section must contain TWO parallel versions. Format them EXACTLY like this — content must go directly under each label, separated by blank lines between paragraphs:
 
 - Original Script
+
+[First line of original transcript.]
+
+[Second line of original transcript.]
+
+[Third line of original transcript.]
+
 - Adapted Script
 
-    [Full adapted script as continuous paragraphs — no section headers, no timestamps, no labels. Just the dialogue the creator should say, paragraph by paragraph, with the app integration woven in naturally. Each paragraph is a logical beat of the video.]
+[First adapted line.]
+
+[Second adapted line.]
+
+[Third adapted line.]
+
+CRITICAL: The content for EACH script must appear IMMEDIATELY after its label ("- Original Script" or "- Adapted Script"). Do NOT leave either label empty. Do NOT put both scripts' content only under "- Adapted Script".
 
 The Original Script is the raw transcript of the reference video, cleaned up (fix transcription errors and filler words only, do not rewrite). Format it with short, breathable paragraphs — each sentence or short idea on its own line, separated by a blank line. Think of each paragraph as one breath or one beat. Do NOT merge multiple sentences into one big paragraph.
 

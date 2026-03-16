@@ -315,7 +315,7 @@ def strip_title_line(brief: str) -> str:
     return '\n'.join(filtered)
 
 
-def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
+def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "") -> str:
     token = TF_NOTION_TOKEN if tag == 'TF' else TV_NOTION_TOKEN
     parent_id = TF_PAGE_ID if tag == 'TF' else TV_PAGE_ID
 
@@ -329,6 +329,20 @@ def publish_to_notion(brief: str, tag: str, video_url: str) -> str:
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
+
+    # If Original Script toggle has no children, fill with transcript as fallback
+    if transcript:
+        for block in blocks:
+            if block.get("type") == "toggle":
+                label = block["toggle"].get("rich_text", [{}])[0].get("text", {}).get("content", "").lower()
+                children = block["toggle"].get("children", [])
+                is_empty = not children or (len(children) == 1 and not children[0].get("paragraph", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "").strip())
+                if "original script" in label and is_empty:
+                    block["toggle"]["children"] = [
+                        paragraph_block(line.strip())
+                        for line in transcript.split('. ')
+                        if line.strip()
+                    ]
 
     # Extract toggle children — Notion API doesn't reliably persist nested
     # children in the page-creation call, so we append them separately.
@@ -421,7 +435,7 @@ def process_video(url: str, tag: str) -> dict:
         transcript = transcript_data["content"]
 
     brief = generate_brief(transcript, url)
-    page_url = publish_to_notion(brief, tag, url)
+    page_url = publish_to_notion(brief, tag, url, transcript=transcript)
 
     hook = ""
     for line in brief.split('\n'):
