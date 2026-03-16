@@ -253,6 +253,33 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
             i += 1
             continue
 
+        # Bold toggle: **Original Script** or **Adapted Script**
+        bold_match = re.match(r'^\*\*(.+?)\*\*$', stripped)
+        if bold_match and bold_match.group(1).lower().rstrip(':') in TOGGLE_LABELS:
+            label = bold_match.group(1).strip().rstrip(':')
+            children = []
+            i += 1
+            while i < len(lines):
+                child_stripped = lines[i].strip()
+                if child_stripped.startswith('## ') or child_stripped.startswith('### ') or \
+                   child_stripped == '---' or \
+                   (child_stripped.startswith('- ') and child_stripped[2:].strip().lower().rstrip(':') in TOGGLE_LABELS) or \
+                   (re.match(r'^\*\*(.+?)\*\*$', child_stripped) and re.match(r'^\*\*(.+?)\*\*$', child_stripped).group(1).lower().rstrip(':') in TOGGLE_LABELS):
+                    break
+                if child_stripped:
+                    children.append(paragraph_block(child_stripped))
+                i += 1
+            if not children:
+                children = [paragraph_block("")]
+            blocks.append({
+                "type": "toggle",
+                "toggle": {
+                    "rich_text": [rich_text(label)],
+                    "children": children
+                }
+            })
+            continue
+
         # Paragraph
         blocks.append(paragraph_block(stripped))
         i += 1
