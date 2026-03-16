@@ -127,11 +127,33 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
             i += 1
             continue
 
-        # Heading 2
+        # Heading 2 — check if it's a toggle section
         if stripped.startswith('## '):
+            label = stripped[3:].strip()
+            if label in ('Original Script', 'Adapted Script'):
+                children = []
+                i += 1
+                while i < len(lines):
+                    child_stripped = lines[i].strip()
+                    if child_stripped.startswith('## ') or child_stripped == '---' or \
+                       child_stripped in ('- Original Script', '- Adapted Script'):
+                        break
+                    if child_stripped:
+                        children.append(paragraph_block(child_stripped))
+                    i += 1
+                if not children:
+                    children = [paragraph_block("")]
+                blocks.append({
+                    "type": "toggle",
+                    "toggle": {
+                        "rich_text": [rich_text(label)],
+                        "children": children
+                    }
+                })
+                continue
             blocks.append({
                 "type": "heading_2",
-                "heading_2": {"rich_text": [rich_text(stripped[3:])]}
+                "heading_2": {"rich_text": [rich_text(label)]}
             })
             i += 1
             continue
