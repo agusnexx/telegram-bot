@@ -288,17 +288,30 @@ def markdown_to_notion_blocks(brief: str, video_url: str) -> list:
 
 
 def extract_title(brief: str) -> str:
+    # First pass: look for explicit TITLE: line (with or without bold)
     for line in brief.split('\n'):
-        if line.startswith('TITLE:'):
-            return line[6:].strip()
-        if re.match(r'^# (?!#)', line):
-            return line[2:].strip()
+        s = line.strip()
+        # **TITLE:** value or TITLE: value
+        m = re.match(r'^\*{0,2}TITLE:\*{0,2}\s*(.*)', s)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    # Second pass: first H1 that isn't a generic header
+    for line in brief.split('\n'):
+        s = line.strip()
+        if re.match(r'^# (?!#)', s):
+            candidate = s[2:].strip()
+            if candidate.lower() not in ('content brief', 'brief', 'video brief'):
+                return candidate
     return "Untitled"
 
 
 def strip_title_line(brief: str) -> str:
     lines = brief.split('\n')
-    filtered = [l for l in lines if not l.startswith('TITLE:') and not re.match(r'^# (?!#)', l)]
+    filtered = [
+        l for l in lines
+        if not re.match(r'^\*{0,2}TITLE:\*{0,2}', l.strip())
+        and not re.match(r'^# (?!#)', l.strip())
+    ]
     return '\n'.join(filtered)
 
 
