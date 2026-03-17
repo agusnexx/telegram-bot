@@ -580,19 +580,15 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
         "Notion-Version": "2022-06-28"
     }
 
-    # If Original Script toggle has no children, fill with transcript as fallback
+    # Always fill Original Script toggle with the actual transcript — never trust Claude to reproduce it
     if transcript:
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', transcript) if s.strip()]
+        transcript_blocks = [paragraph_block(s) for s in sentences]
         for block in blocks:
             if block.get("type") == "toggle":
                 label = block["toggle"].get("rich_text", [{}])[0].get("text", {}).get("content", "").lower()
-                children = block["toggle"].get("children", [])
-                is_empty = not children or (len(children) == 1 and not children[0].get("paragraph", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "").strip())
-                if "original script" in label and is_empty:
-                    block["toggle"]["children"] = [
-                        paragraph_block(line.strip())
-                        for line in transcript.split('. ')
-                        if line.strip()
-                    ]
+                if "original script" in label:
+                    block["toggle"]["children"] = transcript_blocks
 
     # Extract toggle children — Notion API doesn't reliably persist nested
     # children in the page-creation call, so we append them separately.
