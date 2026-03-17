@@ -33,6 +33,11 @@ def extract_urls_and_tag(text):
     return urls, tag
 
 
+def get_proxy() -> str:
+    """Return proxy URL from env, e.g. 'http://user:pass@host:port' or 'socks5://host:port'."""
+    return os.environ.get("PROXY_URL", "")
+
+
 def get_cookies_file() -> str:
     """Write Instagram cookies to a temp file if env var is set."""
     from urllib.parse import unquote
@@ -61,23 +66,55 @@ def download_via_embed(url: str, output_path: str) -> bool:
             return False
         shortcode = shortcode_match.group(2)
 
-        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
-        resp = requests.get(embed_url, timeout=30, headers={
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
-        })
+        proxy = get_proxy()
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+
         video_url = None
-        for pattern in [r'"video_url":"([^"]+)"', r'video_url\\u003D([^\s&"\\]+)', r'<video[^>]+src="([^"]+)"']:
-            m = re.search(pattern, resp.text)
-            if m:
-                video_url = m.group(1).replace('\\u0026', '&').replace('&amp;', '&')
-                break
+        for embed_path in [f"/p/{shortcode}/embed/captioned/", f"/p/{shortcode}/embed/"]:
+            try:
+                resp = requests.get(
+                    f"https://www.instagram.com{embed_path}",
+                    timeout=30, headers=headers, proxies=proxies
+                )
+                print(f"[Embed] {embed_path} status={resp.status_code} len={len(resp.text)}")
+                if resp.status_code != 200:
+                    continue
+                html = resp.text
+                patterns = [
+                    r'"video_url":"(https?:[^"]+)"',
+                    r'"video_url":\s*"(https?:[^"]+)"',
+                    r'video_url\\u003D(https?[^\s\\"&]+)',
+                    r'"contentUrl"\s*:\s*"(https?:[^"]+)"',
+                    r'<meta[^>]+property=["\']og:video:secure_url["\'][^>]+content=["\']([^"\']+)["\']',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:video:secure_url["\']',
+                    r'<video[^>]+src=["\']([^"\']+)["\']',
+                ]
+                for pat in patterns:
+                    m = re.search(pat, html)
+                    if m:
+                        video_url = m.group(1).replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
+                        print(f"[Embed] video_url found via pattern {pat[:60]}")
+                        break
+                if video_url:
+                    break
+            except Exception as e:
+                print(f"[Embed] error fetching {embed_path}: {e}")
 
         if not video_url:
+            print(f"[Embed] no video_url found for {shortcode}")
             return False
 
-        video_resp = requests.get(video_url, stream=True, timeout=120, headers={
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
-        })
+        video_resp = requests.get(
+            video_url, stream=True, timeout=120,
+            headers={"User-Agent": headers["User-Agent"]},
+            proxies=proxies
+        )
+        print(f"[Embed] video download status={video_resp.status_code}")
         if video_resp.status_code != 200:
             return False
 
@@ -86,10 +123,13 @@ def download_via_embed(url: str, output_path: str) -> bool:
             for chunk in video_resp.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", raw_path, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
-        ], capture_output=True, text=True)
-        return os.path.exists(output_path)
+        subprocess.run(
+            ["ffmpeg", "-i", raw_path, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"],
+            capture_output=True, text=True
+        )
+        result = os.path.exists(output_path)
+        print(f"[Embed] output exists={result}")
+        return result
     except Exception as e:
         print(f"[Embed] exception: {e}")
         return False
@@ -195,6 +235,10 @@ def download_audio(url: str, output_path: str) -> str:
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
 
+    proxy = get_proxy()
+    if "instagram.com" in url and not proxy:
+        print("[yt-dlp] WARNING: No PROXY_URL set. Instagram downloads from server IPs are usually blocked. Set PROXY_URL env var to fix this.")
+
     last_error = None
     for attempt in range(3):
         if attempt > 0:
@@ -216,6 +260,8 @@ def download_audio(url: str, output_path: str) -> str:
             "--merge-output-format", "mp4",
             "--sleep-requests", "3",
         ]
+        if proxy:
+            cmd += ["--proxy", proxy]
         if ig_username and ig_password:
             cmd += ["--username", ig_username, "--password", ig_password]
         elif cookies_file:
@@ -251,6 +297,8 @@ def download_audio(url: str, output_path: str) -> str:
                 "--format", "bestaudio",
                 "--sleep-requests", "3",
             ]
+            if proxy:
+                audio_cmd += ["--proxy", proxy]
             if ig_username and ig_password:
                 audio_cmd += ["--username", ig_username, "--password", ig_password]
             elif cookies_file:
