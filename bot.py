@@ -321,8 +321,16 @@ def download_audio(url: str, output_path: str) -> str:
 
 def transcribe_audio(audio_path: str) -> dict:
     from faster_whisper import WhisperModel
-    model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, info = model.transcribe(audio_path, beam_size=5, language="en")
+    model = WhisperModel("medium", device="cpu", compute_type="int8")
+    segments, info = model.transcribe(
+        audio_path,
+        language="en",
+        beam_size=5,
+        temperature=0,
+        condition_on_previous_text=False,
+        vad_filter=True,
+        no_speech_threshold=0.6,
+    )
     text = " ".join([seg.text for seg in segments]).strip()
     return {"content": text, "lang": info.language}
 
