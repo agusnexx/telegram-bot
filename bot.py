@@ -53,6 +53,48 @@ def get_cookies_file() -> str:
     return f.name
 
 
+def download_via_embed(url: str, output_path: str) -> bool:
+    """Get video URL from Instagram public embed page — no auth needed."""
+    try:
+        shortcode_match = re.search(r'/(reel|p)/([A-Za-z0-9_-]+)', url)
+        if not shortcode_match:
+            return False
+        shortcode = shortcode_match.group(2)
+
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
+        resp = requests.get(embed_url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+        })
+        video_url = None
+        for pattern in [r'"video_url":"([^"]+)"', r'video_url\\u003D([^\s&"\\]+)', r'<video[^>]+src="([^"]+)"']:
+            m = re.search(pattern, resp.text)
+            if m:
+                video_url = m.group(1).replace('\\u0026', '&').replace('&amp;', '&')
+                break
+
+        if not video_url:
+            return False
+
+        video_resp = requests.get(video_url, stream=True, timeout=120, headers={
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15"
+        })
+        if video_resp.status_code != 200:
+            return False
+
+        raw_path = output_path.replace(".wav", ".mp4")
+        with open(raw_path, "wb") as f:
+            for chunk in video_resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", raw_path, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
+        ], capture_output=True, text=True)
+        return os.path.exists(output_path)
+    except Exception as e:
+        print(f"[Embed] exception: {e}")
+        return False
+
+
 def download_via_instaloader(url: str, output_path: str) -> bool:
     """Download Instagram video using instaloader with saved session."""
     try:
@@ -138,8 +180,10 @@ def download_audio(url: str, output_path: str) -> str:
     import glob as _glob
     tmpdir = os.path.dirname(output_path)
 
-    # Try instaloader first for Instagram, fallback to yt-dlp
+    # Try multiple methods for Instagram
     if "instagram.com" in url:
+        if download_via_embed(url, output_path):
+            return output_path
         try:
             return download_via_instaloader(url, output_path)
         except Exception as e:
