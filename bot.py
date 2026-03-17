@@ -320,8 +320,23 @@ def download_audio(url: str, output_path: str) -> str:
 
 
 def transcribe_audio(audio_path: str) -> dict:
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if groq_key:
+        # Use Groq API — whisper-large-v3, free, no local memory needed
+        with open(audio_path, "rb") as f:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                files={"file": (os.path.basename(audio_path), f, "audio/wav")},
+                data={"model": "whisper-large-v3", "language": "en", "response_format": "text"},
+                timeout=120,
+            )
+        resp.raise_for_status()
+        return {"content": resp.text.strip(), "lang": "en"}
+
+    # Fallback: local Whisper base (fits in Railway free tier memory)
     from faster_whisper import WhisperModel
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    model = WhisperModel("base", device="cpu", compute_type="int8")
     segments, info = model.transcribe(
         audio_path,
         language="en",
