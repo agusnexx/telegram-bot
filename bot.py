@@ -321,12 +321,11 @@ def download_audio(url: str, output_path: str) -> str:
 
 def transcribe_audio(audio_path: str) -> dict:
     from faster_whisper import WhisperModel
-    model = WhisperModel("large-v3", device="cpu", compute_type="int8")
+    model = WhisperModel("medium", device="cpu", compute_type="int8")
     segments, info = model.transcribe(
         audio_path,
         language="en",
-        beam_size=10,
-        best_of=5,
+        beam_size=5,
         temperature=0,
         condition_on_previous_text=False,
         vad_filter=True,
