@@ -54,19 +54,28 @@ def get_cookies_file() -> str:
 
 
 def download_via_instaloader(url: str, output_path: str) -> bool:
-    """Download Instagram video using instaloader with credentials."""
+    """Download Instagram video using instaloader with saved session."""
     try:
-        import instaloader
+        import instaloader, base64, tempfile as _tempfile
         shortcode_match = re.search(r'/(reel|p)/([A-Za-z0-9_-]+)', url)
         if not shortcode_match:
             return False
         shortcode = shortcode_match.group(2)
 
         L = instaloader.Instaloader(download_video_thumbnails=False, save_metadata=False, compress_json=False)
-        username = os.environ.get("INSTAGRAM_USERNAME", "")
-        password = os.environ.get("INSTAGRAM_PASSWORD", "")
-        if username and password:
-            L.login(username, password)
+
+        session_b64 = os.environ.get("INSTAGRAM_SESSION", "")
+        if session_b64:
+            session_data = base64.b64decode(session_b64)
+            session_file = _tempfile.mktemp(suffix=".session")
+            with open(session_file, "wb") as f:
+                f.write(session_data)
+            L.load_session_from_file("", session_file)
+        else:
+            username = os.environ.get("INSTAGRAM_USERNAME", "")
+            password = os.environ.get("INSTAGRAM_PASSWORD", "")
+            if username and password:
+                L.login(username, password)
 
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         video_url = post.video_url
