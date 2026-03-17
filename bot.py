@@ -70,11 +70,11 @@ def download_via_cobalt(url: str, output_path: str) -> bool:
         )
         print(f"[Cobalt] status={resp.status_code} body={resp.text[:300]}")
         if resp.status_code != 200:
-            return False
+            raise RuntimeError(f"Cobalt HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         download_url = data.get("url")
         if not download_url:
-            return False
+            raise RuntimeError(f"Cobalt no URL: {data}")
         video_resp = requests.get(download_url, timeout=120, stream=True)
         if video_resp.status_code != 200:
             return False
@@ -88,7 +88,7 @@ def download_via_cobalt(url: str, output_path: str) -> bool:
         return os.path.exists(output_path)
     except Exception as e:
         print(f"[Cobalt] exception: {e}")
-        return False
+        raise RuntimeError(f"Cobalt exception: {e}")
 
 
 def download_audio(url: str, output_path: str) -> str:
@@ -98,8 +98,10 @@ def download_audio(url: str, output_path: str) -> str:
 
     # Try Cobalt API first for Instagram
     if "instagram.com" in url:
-        if download_via_cobalt(url, output_path):
+        cobalt_ok = download_via_cobalt(url, output_path)
+        if cobalt_ok:
             return output_path
+        raise RuntimeError(f"Cobalt failed — check logs for details")
 
     cookies_file = None
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "")
