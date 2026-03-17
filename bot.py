@@ -70,12 +70,10 @@ def download_via_instaloader(url: str, output_path: str) -> bool:
             session_file = _tempfile.mktemp(suffix=".session")
             with open(session_file, "wb") as f:
                 f.write(session_data)
-            L.load_session_from_file("", session_file)
-        else:
-            username = os.environ.get("INSTAGRAM_USERNAME", "")
-            password = os.environ.get("INSTAGRAM_PASSWORD", "")
-            if username and password:
-                L.login(username, password)
+            try:
+                L.load_session_from_file("3292491077", session_file)
+            except Exception:
+                L.load_session_from_file("", session_file)
 
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         video_url = post.video_url
@@ -140,9 +138,12 @@ def download_audio(url: str, output_path: str) -> str:
     import glob as _glob
     tmpdir = os.path.dirname(output_path)
 
-    # Try instaloader first for Instagram
+    # Try instaloader first for Instagram, fallback to yt-dlp
     if "instagram.com" in url:
-        return download_via_instaloader(url, output_path)
+        try:
+            return download_via_instaloader(url, output_path)
+        except Exception as e:
+            print(f"[Instaloader] failed, trying yt-dlp: {e}")
 
     cookies_file = None
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "")
