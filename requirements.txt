@@ -3,3 +3,4 @@ anthropic
 faster-whisper
 yt-dlp
 requests
+instaloader

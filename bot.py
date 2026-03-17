@@ -53,6 +53,41 @@ def get_cookies_file() -> str:
     return f.name
 
 
+def download_via_instaloader(url: str, output_path: str) -> bool:
+    """Download Instagram video using instaloader with credentials."""
+    try:
+        import instaloader
+        shortcode_match = re.search(r'/(reel|p)/([A-Za-z0-9_-]+)', url)
+        if not shortcode_match:
+            return False
+        shortcode = shortcode_match.group(2)
+
+        L = instaloader.Instaloader(download_video_thumbnails=False, save_metadata=False, compress_json=False)
+        username = os.environ.get("INSTAGRAM_USERNAME", "")
+        password = os.environ.get("INSTAGRAM_PASSWORD", "")
+        if username and password:
+            L.login(username, password)
+
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        video_url = post.video_url
+        if not video_url:
+            return False
+
+        resp = requests.get(video_url, stream=True, timeout=120, headers={"User-Agent": "Mozilla/5.0"})
+        raw_path = output_path.replace(".wav", ".mp4")
+        with open(raw_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        ffmpeg_result = subprocess.run([
+            "ffmpeg", "-i", raw_path, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
+        ], capture_output=True, text=True)
+        return os.path.exists(output_path)
+    except Exception as e:
+        print(f"[Instaloader] exception: {e}")
+        raise RuntimeError(f"Instaloader failed: {e}")
+
+
 def download_via_cobalt(url: str, output_path: str) -> bool:
     """Try to download audio via Cobalt API. Returns True if successful."""
     try:
@@ -96,12 +131,9 @@ def download_audio(url: str, output_path: str) -> str:
     import glob as _glob
     tmpdir = os.path.dirname(output_path)
 
-    # Try Cobalt API first for Instagram
+    # Try instaloader first for Instagram
     if "instagram.com" in url:
-        cobalt_ok = download_via_cobalt(url, output_path)
-        if cobalt_ok:
-            return output_path
-        raise RuntimeError(f"Cobalt failed — check logs for details")
+        return download_via_instaloader(url, output_path)
 
     cookies_file = None
     ig_username = os.environ.get("INSTAGRAM_USERNAME", "")
