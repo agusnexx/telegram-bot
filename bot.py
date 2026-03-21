@@ -215,6 +215,40 @@ def download_via_cobalt(url: str, output_path: str) -> bool:
         raise RuntimeError(f"Cobalt exception: {e}")
 
 
+def get_fathom_transcript(url: str) -> str:
+    """Try to extract transcript text directly from a Fathom share page."""
+    try:
+        resp = requests.get(url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        if resp.status_code != 200:
+            return ""
+        html = resp.text
+        # Fathom embeds transcript in JSON inside a <script> tag
+        for pattern in [
+            r'"transcript"\s*:\s*"((?:[^"\\]|\\.)+)"',
+            r'"body"\s*:\s*"((?:[^"\\]|\\.)+)"',
+            r'"text"\s*:\s*"((?:[^"\\]|\\.)+)"',
+        ]:
+            m = re.search(pattern, html)
+            if m:
+                text = m.group(1).encode('utf-8').decode('unicode_escape')
+                if len(text) > 100:
+                    print(f"[Fathom] transcript extracted, len={len(text)}")
+                    return text
+        # Fallback: look for transcript segments as array
+        segments = re.findall(r'"(?:content|text)"\s*:\s*"([^"]{20,})"', html)
+        if segments:
+            text = " ".join(segments)
+            print(f"[Fathom] transcript from segments, len={len(text)}")
+            return text
+        print("[Fathom] no transcript found in page")
+        return ""
+    except Exception as e:
+        print(f"[Fathom] exception scraping transcript: {e}")
+        return ""
+
+
 def download_audio(url: str, output_path: str) -> str:
     """Download and return path to extracted wav file."""
     import glob as _glob
@@ -681,12 +715,18 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
 
 
 def process_video(url: str, tag: str) -> dict:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        audio_path = os.path.join(tmpdir, "audio.wav")
-        download_audio(url, audio_path)
+    transcript = ""
 
-        transcript_data = transcribe_audio(audio_path)
-        transcript = transcript_data["content"]
+    # Fathom: try to get transcript directly from the page (faster, no download)
+    if "fathom.video" in url:
+        transcript = get_fathom_transcript(url)
+
+    if not transcript:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, "audio.wav")
+            download_audio(url, audio_path)
+            transcript_data = transcribe_audio(audio_path)
+            transcript = transcript_data["content"]
 
     brief = generate_brief(transcript, url)
     page_url = publish_to_notion(brief, tag, url, transcript=transcript)
