@@ -2,10 +2,15 @@ import asyncio
 import os
 import re
 import json
+import hmac
+import hashlib
+import base64
 import tempfile
 import subprocess
 import time
+from datetime import date
 from pathlib import Path
+from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 import anthropic
@@ -17,6 +22,9 @@ TF_NOTION_TOKEN = os.environ["TF_NOTION_TOKEN"]
 TF_PAGE_ID = os.environ["TF_PAGE_ID"]
 TV_NOTION_TOKEN = os.environ["TV_NOTION_TOKEN"]
 TV_PAGE_ID = os.environ["TV_PAGE_ID"]
+CALLS_NOTION_TOKEN = os.environ.get("CALLS_NOTION_TOKEN", TF_NOTION_TOKEN)
+CALLS_NOTION_PAGE_ID = os.environ.get("CALLS_NOTION_PAGE_ID", "252ebaa28b97804da026d9df8a1d5981")
+LUCAS_EMAIL = "lucas@theviralapp.com"
 
 BASE_DIR = Path(__file__).parent
 BRIEF_PROMPT_PATH = BASE_DIR / "BRIEF_PROMPT.md"
@@ -766,6 +774,150 @@ def process_video_file(file_path: str, tag: str, original_filename: str) -> dict
     return {"url": page_url, "hook": hook}
 
 
+def verify_fathom_signature(body: bytes, headers: dict) -> bool:
+    try:
+        secret = os.environ.get("FATHOM_WEBHOOK_SECRET", "")
+        if not secret:
+            return True
+        secret_bytes = base64.b64decode(secret.replace("whsec_", ""))
+        webhook_id = headers.get("webhook-id", "")
+        webhook_timestamp = headers.get("webhook-timestamp", "")
+        webhook_signature = headers.get("webhook-signature", "")
+        signed_content = f"{webhook_id}.{webhook_timestamp}.{body.decode('utf-8')}"
+        sig = base64.b64encode(hmac.new(secret_bytes, signed_content.encode(), hashlib.sha256).digest()).decode()
+        for s in webhook_signature.split(" "):
+            if s.startswith("v1,") and hmac.compare_digest(s[3:], sig):
+                return True
+        return False
+    except Exception as e:
+        print(f"[Fathom] signature error: {e}")
+        return False
+
+
+def get_fathom_call_transcript(recording_id: str) -> tuple:
+    """Returns (transcript_text, has_lucas, call_title)."""
+    api_key = os.environ.get("FATHOM_API_KEY", "")
+    headers = {"X-Api-Key": api_key}
+
+    # Get recording metadata for title
+    call_title = "Call with Lucas"
+    try:
+        r = requests.get(f"https://api.fathom.video/v1/recordings/{recording_id}", headers=headers, timeout=20)
+        if r.status_code == 200:
+            call_title = r.json().get("title", call_title)
+    except Exception:
+        pass
+
+    # Get transcript
+    r = requests.get(f"https://api.fathom.video/v1/recordings/{recording_id}/transcript", headers=headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+
+    has_lucas = False
+    lines = []
+    for item in data.get("items", []):
+        speaker = item.get("speaker", {})
+        email = speaker.get("matched_calendar_invitee_email", "") or ""
+        name = speaker.get("display_name", "Unknown")
+        text = item.get("text", "").strip()
+        timestamp = item.get("timestamp", "")
+        if LUCAS_EMAIL in email.lower():
+            has_lucas = True
+        if text:
+            lines.append(f"[{timestamp}] {name}: {text}")
+
+    return "\n".join(lines), has_lucas, call_title
+
+
+def generate_call_summary(transcript: str, call_title: str) -> str:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2048,
+        messages=[{
+            "role": "user",
+            "content": f"""Analyze this mentorship call transcript and generate a structured summary in markdown.
+
+CALL: {call_title}
+
+TRANSCRIPT:
+{transcript}
+
+Generate the following sections in markdown:
+
+## Summary
+3-5 sentences summarizing the main topics discussed.
+
+## Key Decisions
+Bullet list of decisions or conclusions reached.
+
+## Action Items
+Numbered list of concrete next steps. Format each as: **[Who]** — what to do.
+
+Be concise and actionable. Output only the markdown, nothing else."""
+        }]
+    )
+    return message.content[0].text
+
+
+def publish_call_to_notion(summary: str, call_title: str, recording_url: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {CALLS_NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    today = date.today().strftime("%B %d, %Y")
+    page_title = f"{today} — {call_title}"
+
+    blocks = []
+    if recording_url:
+        blocks.append({"type": "quote", "quote": {"rich_text": [
+            rich_text("🎙️ Recording: "),
+            rich_text("Watch here", url=recording_url)
+        ]}})
+    blocks.extend(markdown_to_notion_blocks(summary, recording_url))
+
+    resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json={
+        "parent": {"page_id": CALLS_NOTION_PAGE_ID},
+        "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
+        "children": blocks[:100]
+    })
+    resp.raise_for_status()
+    return f"https://notion.so/{resp.json()['id'].replace('-', '')}"
+
+
+async def process_fathom_call(recording_id: str, share_url: str):
+    try:
+        loop = asyncio.get_event_loop()
+        transcript, has_lucas, call_title = await loop.run_in_executor(
+            None, get_fathom_call_transcript, recording_id
+        )
+        if not has_lucas:
+            print(f"[Fathom] Lucas not in call {recording_id}, skipping")
+            return
+        summary = await loop.run_in_executor(None, generate_call_summary, transcript, call_title)
+        notion_url = await loop.run_in_executor(None, publish_call_to_notion, summary, call_title, share_url)
+        print(f"[Fathom] ✅ Published: {notion_url}")
+    except Exception as e:
+        import traceback
+        print(f"[Fathom] ❌ Error: {e}\n{traceback.format_exc()}")
+
+
+async def fathom_webhook(request):
+    body = await request.read()
+    if not verify_fathom_signature(body, dict(request.headers)):
+        return web.Response(status=401, text="Invalid signature")
+    data = json.loads(body)
+    event_type = data.get("type", "")
+    print(f"[Fathom webhook] event={event_type} data={json.dumps(data)[:300]}")
+    if event_type == "meeting_content_ready":
+        recording_id = data.get("recording_id", "")
+        share_url = data.get("share_url", data.get("url", ""))
+        if recording_id:
+            asyncio.create_task(process_fathom_call(recording_id, share_url))
+    return web.Response(status=200, text="OK")
+
+
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     urls, tag = extract_urls_and_tag(texto)
@@ -838,4 +990,26 @@ async def video_responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
 app.add_handler(MessageHandler((filters.VIDEO | filters.Document.VIDEO) & ~filters.COMMAND, video_responder))
-app.run_polling()
+
+
+async def main():
+    # HTTP server for Fathom webhooks
+    web_app = web.Application()
+    web_app.router.add_post("/fathom-webhook", fathom_webhook)
+    web_app.router.add_get("/health", lambda r: web.Response(text="OK"))
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    print(f"[Server] Listening on port {port}")
+
+    # Telegram bot
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    print("[Bot] Started")
+
+    await asyncio.Event().wait()  # run forever
+
+
+asyncio.run(main())
