@@ -384,9 +384,42 @@ def transcribe_audio(audio_path: str) -> dict:
     return {"content": text, "lang": info.language}
 
 
-def generate_brief(transcript: str, video_url: str) -> str:
+DEEPSTASH_INTEGRATION_RULES = """
+## DEEPSTASH INTEGRATION RULES (TV scripts only)
+
+The Adapted Script MUST include a natural Deepstash integration. Follow these rules exactly:
+
+**WHEN:** In the last 20% of the script, after the problem is fully established.
+
+**HOW TO INTRODUCE IT (use one of these phrases, word for word):**
+- "Here's what actually worked for me"
+- "The method that I found"
+- "What I've been using is this method"
+- "I use this method"
+
+**WHAT TO SAY ABOUT THE APP (never name it, describe it functionally):**
+- "feeds me bite-sized ideas from actual books instead of brain-rotting content"
+- "simulates the scrolling feeling but for learning something new every day"
+- "same scrolling motion, but now I'm absorbing wisdom from books"
+- "same dopamine hit, but I'm actually learning something"
+- "point this at any book and get instant summaries"
+
+**CONNECTION:** Always frame it as a direct REPLACEMENT of the bad behavior, not an addition:
+- Doomscrolling → scrolling that teaches you
+- Wasted screen time → screen time that builds your brain
+
+**CTA:** End with: "Comment the word BOOK and I'll send you the method."
+
+**TONE:** Never slow down or change energy for the app moment. Same raw, urgent energy throughout.
+"""
+
+
+def generate_brief(transcript: str, video_url: str, tag: str = "") -> str:
     brief_prompt = BRIEF_PROMPT_PATH.read_text()
     client_context = CLIENT_PATH.read_text()
+
+    if tag == "TV":
+        brief_prompt = brief_prompt + "\n\n" + DEEPSTASH_INTEGRATION_RULES
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     message = client.messages.create(
@@ -728,7 +761,7 @@ def process_video(url: str, tag: str) -> dict:
             transcript_data = transcribe_audio(audio_path)
             transcript = transcript_data["content"]
 
-    brief = generate_brief(transcript, url)
+    brief = generate_brief(transcript, url, tag=tag)
     page_url = publish_to_notion(brief, tag, url, transcript=transcript)
 
     hook = ""
