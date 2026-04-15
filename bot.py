@@ -252,6 +252,7 @@ def get_fathom_transcript(url: str) -> str:
 def download_audio(url: str, output_path: str) -> str:
     """Download and return path to extracted wav file."""
     import glob as _glob
+    import yt_dlp
     tmpdir = os.path.dirname(output_path)
 
     # Try multiple methods for Instagram
@@ -286,25 +287,27 @@ def download_audio(url: str, output_path: str) -> str:
                 pass
 
         dl_template = os.path.join(tmpdir, "dl.%(ext)s")
-        cmd = [
-            sys.executable, "-m", "yt_dlp",
-            "-o", dl_template,
-            "--no-playlist",
-            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "--sleep-requests", "3",
-        ]
+        ydl_opts = {
+            "outtmpl": dl_template,
+            "noplaylist": True,
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "sleep_requests": 3,
+            "quiet": True,
+        }
         if proxy:
-            cmd += ["--proxy", proxy]
+            ydl_opts["proxy"] = proxy
         if ig_username and ig_password:
-            cmd += ["--username", ig_username, "--password", ig_password]
+            ydl_opts["username"] = ig_username
+            ydl_opts["password"] = ig_password
         elif cookies_file:
-            cmd += ["--cookies", cookies_file]
-        cmd.append(url)
+            ydl_opts["cookiefile"] = cookies_file
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        if result.returncode != 0:
-            last_error = result.stderr[-500:]
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            last_error = str(e)
             continue
 
         files = _glob.glob(os.path.join(tmpdir, "dl.*"))
@@ -324,21 +327,25 @@ def download_audio(url: str, output_path: str) -> str:
         if not has_audio:
             # Re-download audio-only stream
             audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
-            audio_cmd = [
-                sys.executable, "-m", "yt_dlp",
-                "-o", audio_dl,
-                "--no-playlist",
-                "--format", "bestaudio",
-                "--sleep-requests", "3",
-            ]
+            audio_opts = {
+                "outtmpl": audio_dl,
+                "noplaylist": True,
+                "format": "bestaudio",
+                "sleep_requests": 3,
+                "quiet": True,
+            }
             if proxy:
-                audio_cmd += ["--proxy", proxy]
+                audio_opts["proxy"] = proxy
             if ig_username and ig_password:
-                audio_cmd += ["--username", ig_username, "--password", ig_password]
+                audio_opts["username"] = ig_username
+                audio_opts["password"] = ig_password
             elif cookies_file:
-                audio_cmd += ["--cookies", cookies_file]
-            audio_cmd.append(url)
-            subprocess.run(audio_cmd, capture_output=True, text=True, timeout=180)
+                audio_opts["cookiefile"] = cookies_file
+            try:
+                with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                    ydl.download([url])
+            except Exception:
+                pass
             audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
             if audio_files:
                 dl_file = audio_files[0]
