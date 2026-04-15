@@ -287,7 +287,7 @@ def download_audio(url: str, output_path: str) -> str:
 
         dl_template = os.path.join(tmpdir, "dl.%(ext)s")
         cmd = [
-            "python3", "-m", "yt_dlp",
+            sys.executable, "-m", "yt_dlp",
             "-o", dl_template,
             "--no-playlist",
             "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -325,7 +325,7 @@ def download_audio(url: str, output_path: str) -> str:
             # Re-download audio-only stream
             audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
             audio_cmd = [
-                "python3", "-m", "yt_dlp",
+                sys.executable, "-m", "yt_dlp",
                 "-o", audio_dl,
                 "--no-playlist",
                 "--format", "bestaudio",
@@ -422,13 +422,15 @@ def generate_brief(transcript: str, video_url: str, tag: str = "") -> str:
         brief_prompt = brief_prompt + "\n\n" + DEEPSTASH_INTEGRATION_RULES
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        system=brief_prompt,
-        messages=[{
-            "role": "user",
-            "content": f"""## CLIENT CONTEXT
+    for attempt in range(3):
+        try:
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4096,
+                system=brief_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"""## CLIENT CONTEXT
 {client_context}
 
 ## REFERENCE VIDEO URL
@@ -442,9 +444,14 @@ English (EN) — MANDATORY: Write the ENTIRE brief in English.
 
 ---
 Generate the content brief following the instructions exactly. Output only the brief in markdown, nothing else."""
-        }]
-    )
-    return message.content[0].text
+                }]
+            )
+            return message.content[0].text
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < 2:
+                time.sleep(30 * (attempt + 1))
+                continue
+            raise
 
 
 def rich_text(content: str, url: str = None):
