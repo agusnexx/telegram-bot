@@ -260,7 +260,9 @@ def download_audio(url: str, output_path: str) -> str:
         if download_via_embed(url, output_path):
             return output_path
         try:
-            return download_via_instaloader(url, output_path)
+            if download_via_instaloader(url, output_path):
+                return output_path
+            print("[Instaloader] returned False, trying yt-dlp")
         except Exception as e:
             print(f"[Instaloader] failed, trying yt-dlp: {e}")
 
