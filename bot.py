@@ -822,7 +822,7 @@ Rules: English, 4-6 paragraphs, rewrite fully (no lifted phrases), talking head 
             raise
 
 
-def publish_tb_to_notion(handle: str, hook: str, paragraphs: list) -> str:
+def publish_tb_to_notion(handle: str, hook: str, paragraphs: list, video_url: str = "") -> str:
     headers = {
         "Authorization": f"Bearer {TB_NOTION_TOKEN}",
         "Content-Type": "application/json",
@@ -836,16 +836,26 @@ def publish_tb_to_notion(handle: str, hook: str, paragraphs: list) -> str:
 
     script_children = [_p(p) for p in paragraphs if p.strip()]
 
-    page_data = {
-        "parent": {"page_id": TB_PAGE_ID},
-        "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
-        "children": []  # toggle children appended separately
-    }
+    top_blocks = []
+    if video_url:
+        top_blocks.append({
+            "type": "quote",
+            "quote": {"rich_text": [
+                {"type": "text", "text": {"content": "Reference video: "}},
+                {"type": "text", "text": {"content": video_url, "link": {"url": video_url}}}
+            ]}
+        })
     toggle_block = {
         "type": "toggle",
         "toggle": {"rich_text": [{"type": "text", "text": {"content": "Script"}, "annotations": {"bold": True}}]}
     }
-    page_data["children"] = [toggle_block]
+    top_blocks.append(toggle_block)
+
+    page_data = {
+        "parent": {"page_id": TB_PAGE_ID},
+        "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
+        "children": top_blocks
+    }
 
     resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
     resp.raise_for_status()
@@ -885,7 +895,7 @@ def process_video(url: str, tag: str) -> dict:
         handle = extract_handle_from_url(url)
         hook = next((s.strip() for s in transcript.split('.') if s.strip()), transcript[:80])
         paragraphs = [s.strip() for s in re.split(r'(?<=[.!?])\s+', transcript) if s.strip()]
-        page_url = publish_tb_to_notion(handle, hook, paragraphs)
+        page_url = publish_tb_to_notion(handle, hook, paragraphs, video_url=url)
         return {"url": page_url, "hook": hook}
 
     brief = generate_brief(transcript, url, tag=tag)
