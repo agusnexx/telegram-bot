@@ -866,8 +866,8 @@ def publish_tb_to_notion(handle: str, hook: str, paragraphs: list, video_url: st
     r = requests.get(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=headers)
     r.raise_for_status()
     blocks = r.json().get("results", [])
-    if blocks:
-        toggle_id = blocks[0]["id"]
+    toggle_id = next((b["id"] for b in blocks if b.get("type") == "toggle"), None)
+    if toggle_id:
         requests.patch(
             f"https://api.notion.com/v1/blocks/{toggle_id}/children",
             headers=headers,
