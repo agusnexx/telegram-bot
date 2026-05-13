@@ -882,10 +882,11 @@ def process_video(url: str, tag: str) -> dict:
             transcript = transcript_data["content"]
 
     if tag == "TB":
-        data = generate_tb_script(transcript)
         handle = extract_handle_from_url(url)
-        page_url = publish_tb_to_notion(handle, data["hook"], data["paragraphs"])
-        return {"url": page_url, "hook": data["hook"]}
+        hook = next((s.strip() for s in transcript.split('.') if s.strip()), transcript[:80])
+        paragraphs = [s.strip() for s in re.split(r'(?<=[.!?])\s+', transcript) if s.strip()]
+        page_url = publish_tb_to_notion(handle, hook, paragraphs)
+        return {"url": page_url, "hook": hook}
 
     brief = generate_brief(transcript, url, tag=tag)
     page_url = publish_to_notion(brief, tag, url, transcript=transcript)
