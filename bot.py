@@ -17,6 +17,8 @@ TF_NOTION_TOKEN = os.environ["TF_NOTION_TOKEN"]
 TF_PAGE_ID = os.environ["TF_PAGE_ID"]
 TV_NOTION_TOKEN = os.environ["TV_NOTION_TOKEN"]
 TV_PAGE_ID = os.environ["TV_PAGE_ID"]
+TB_NOTION_TOKEN = os.environ.get("TB_NOTION_TOKEN", os.environ.get("TV_NOTION_TOKEN", ""))
+TB_PAGE_ID = os.environ.get("TB_PAGE_ID", "33cebaa28b9780c8b483f36fcaa542bf")
 
 BASE_DIR = Path(__file__).parent
 BRIEF_PROMPT_PATH = BASE_DIR / "BRIEF_PROMPT.md"
@@ -30,7 +32,24 @@ def extract_urls_and_tag(text):
         tag = 'TF'
     elif re.search(r'\bTV\b', text):
         tag = 'TV'
+    elif re.search(r'\bTB\b', text):
+        tag = 'TB'
     return urls, tag
+
+
+def extract_handle_from_url(url: str) -> str:
+    parts = re.sub(r'\?.*$', '', url).strip('/').split('/')
+    # TikTok: /@username/video/...
+    for p in parts:
+        if p.startswith('@'):
+            return p
+    # Instagram: domain/username/reel/... or domain/reel/...
+    skip = {'www.instagram.com', 'instagram.com', 'reel', 'p', 'tv', 'stories',
+            'www.tiktok.com', 'tiktok.com', 'video', ''}
+    for p in parts:
+        if p not in skip and not p.startswith('http'):
+            return f"@{p}"
+    return "@unknown"
 
 
 def get_proxy() -> str:
@@ -763,6 +782,91 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
     return f"https://notion.so/{page_id.replace('-', '')}"
 
 
+def generate_tb_script(transcript: str) -> dict:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""You are a personal brand content strategist. Analyze this video transcript and write an adapted talking head script.
+
+Transcript:
+{transcript[:3000]}
+
+Output JSON only (no markdown):
+{{
+  "hook": "The hook sentence (first 1-2 sentences of the script)",
+  "paragraphs": [
+    "Hook — strong opener 1-2 sentences",
+    "Setup paragraph",
+    "Core insight",
+    "Example or proof",
+    "Takeaway or CTA"
+  ]
+}}
+
+Rules: English, 4-6 paragraphs, rewrite fully (no lifted phrases), talking head style — direct, no fluff."""
+    for attempt in range(3):
+        try:
+            msg = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw = msg.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            return json.loads(raw.strip())
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < 2:
+                time.sleep(30 * (attempt + 1))
+                continue
+            raise
+
+
+def publish_tb_to_notion(handle: str, hook: str, paragraphs: list) -> str:
+    headers = {
+        "Authorization": f"Bearer {TB_NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    hook_short = hook[:80] + ("…" if len(hook) > 80 else "")
+    page_title = f"{handle} — {hook_short}"
+
+    def _p(text):
+        return {"type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+    script_children = [_p(p) for p in paragraphs if p.strip()]
+
+    page_data = {
+        "parent": {"page_id": TB_PAGE_ID},
+        "properties": {"title": {"title": [{"text": {"content": page_title}}]}},
+        "children": []  # toggle children appended separately
+    }
+    toggle_block = {
+        "type": "toggle",
+        "toggle": {"rich_text": [{"type": "text", "text": {"content": "Script"}, "annotations": {"bold": True}}]}
+    }
+    page_data["children"] = [toggle_block]
+
+    resp = requests.post("https://api.notion.com/v1/pages", headers=headers, json=page_data)
+    resp.raise_for_status()
+    page = resp.json()
+    page_id = page["id"]
+
+    # Append script paragraphs inside the toggle
+    r = requests.get(f"https://api.notion.com/v1/blocks/{page_id}/children", headers=headers)
+    r.raise_for_status()
+    blocks = r.json().get("results", [])
+    if blocks:
+        toggle_id = blocks[0]["id"]
+        requests.patch(
+            f"https://api.notion.com/v1/blocks/{toggle_id}/children",
+            headers=headers,
+            json={"children": script_children}
+        )
+
+    return f"https://notion.so/{page_id.replace('-', '')}"
+
+
 def process_video(url: str, tag: str) -> dict:
     transcript = ""
 
@@ -776,6 +880,12 @@ def process_video(url: str, tag: str) -> dict:
             download_audio(url, audio_path)
             transcript_data = transcribe_audio(audio_path)
             transcript = transcript_data["content"]
+
+    if tag == "TB":
+        data = generate_tb_script(transcript)
+        handle = extract_handle_from_url(url)
+        page_url = publish_tb_to_notion(handle, data["hook"], data["paragraphs"])
+        return {"url": page_url, "hook": data["hook"]}
 
     brief = generate_brief(transcript, url, tag=tag)
     page_url = publish_to_notion(brief, tag, url, transcript=transcript)
@@ -820,7 +930,7 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     urls, tag = extract_urls_and_tag(texto)
 
     if not urls or not tag:
-        await update.message.reply_text("Mandame links con el tag TF o TV.")
+        await update.message.reply_text("Mandame links con el tag TF, TV o TB.")
         return
 
     total = len(urls)
@@ -858,9 +968,11 @@ async def video_responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tag = 'TF'
     elif re.search(r'\bTV\b', caption):
         tag = 'TV'
+    elif re.search(r'\bTB\b', caption):
+        tag = 'TB'
 
     if not tag:
-        await update.message.reply_text("Mandame el video con caption TF o TV.")
+        await update.message.reply_text("Mandame el video con caption TF, TV o TB.")
         return
 
     video = update.message.video or update.message.document
