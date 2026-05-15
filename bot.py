@@ -291,7 +291,7 @@ def download_audio(url: str, output_path: str) -> str:
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
 
-    proxy = get_proxy()
+    proxy = get_proxy() if "instagram.com" in url else ""
     if "instagram.com" in url and not proxy:
         print("[yt-dlp] WARNING: No PROXY_URL set. Instagram downloads from server IPs are usually blocked. Set PROXY_URL env var to fix this.")
 
