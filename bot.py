@@ -308,25 +308,28 @@ def download_audio(url: str, output_path: str) -> str:
                 pass
 
         dl_template = os.path.join(tmpdir, "dl.%(ext)s")
-        ydl_opts = {
-            "outtmpl": dl_template,
-            "noplaylist": True,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "merge_output_format": "mp4",
-            "sleep_requests": 3,
-            "quiet": True,
-        }
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "--sleep-requests", "3",
+            "--quiet",
+            "--output", dl_template,
+        ]
         if proxy:
-            ydl_opts["proxy"] = proxy
+            cmd += ["--proxy", proxy]
         if ig_username and ig_password:
-            ydl_opts["username"] = ig_username
-            ydl_opts["password"] = ig_password
+            cmd += ["--username", ig_username, "--password", ig_password]
         elif cookies_file:
-            ydl_opts["cookiefile"] = cookies_file
+            cmd += ["--cookies", cookies_file]
+        cmd.append(url)
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                last_error = result.stderr[-500:]
+                continue
         except Exception as e:
             last_error = str(e)
             continue
@@ -348,23 +351,19 @@ def download_audio(url: str, output_path: str) -> str:
         if not has_audio:
             # Re-download audio-only stream
             audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
-            audio_opts = {
-                "outtmpl": audio_dl,
-                "noplaylist": True,
-                "format": "bestaudio",
-                "sleep_requests": 3,
-                "quiet": True,
-            }
+            audio_cmd = [
+                "yt-dlp", "--no-playlist", "--format", "bestaudio",
+                "--sleep-requests", "3", "--quiet", "--output", audio_dl,
+            ]
             if proxy:
-                audio_opts["proxy"] = proxy
+                audio_cmd += ["--proxy", proxy]
             if ig_username and ig_password:
-                audio_opts["username"] = ig_username
-                audio_opts["password"] = ig_password
+                audio_cmd += ["--username", ig_username, "--password", ig_password]
             elif cookies_file:
-                audio_opts["cookiefile"] = cookies_file
+                audio_cmd += ["--cookies", cookies_file]
+            audio_cmd.append(url)
             try:
-                with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                    ydl.download([url])
+                subprocess.run(audio_cmd, capture_output=True, text=True, timeout=180)
             except Exception:
                 pass
             audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
