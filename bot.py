@@ -329,7 +329,16 @@ def download_audio(url: str, output_path: str) -> str:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
             if result.returncode != 0:
                 last_error = result.stderr[-500:]
-                continue
+                # 407 proxy auth failure — retry without proxy
+                if proxy and "407" in last_error:
+                    print("[yt-dlp] Proxy 407, retrying without proxy...")
+                    cmd_no_proxy = [c for c in cmd if c != proxy and c != "--proxy"]
+                    result2 = subprocess.run(cmd_no_proxy, capture_output=True, text=True, timeout=180)
+                    if result2.returncode != 0:
+                        last_error = result2.stderr[-500:]
+                        continue
+                else:
+                    continue
         except Exception as e:
             last_error = str(e)
             continue
