@@ -58,23 +58,23 @@ def get_proxy() -> str:
 
 
 def get_cookies_file() -> str:
-    """Write Instagram cookies to a temp file if env var is set."""
+    """Write Instagram cookies to a fixed path file (avoids NamedTemporaryFile threading issues)."""
     from urllib.parse import unquote
     cookies = os.environ.get("INSTAGRAM_COOKIES", "")
     if not cookies:
         return None
-    f = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    f.write("# Netscape HTTP Cookie File\n")
+    path = os.path.join(tempfile.gettempdir(), "ig_cookies.txt")
     cookie_pairs = {}
     for item in cookies.split(';'):
         item = item.strip()
         if '=' in item:
             name, value = item.split('=', 1)
             cookie_pairs[name.strip()] = unquote(value.strip())
-    for name, value in cookie_pairs.items():
-        f.write(f".instagram.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
-    f.close()
-    return f.name
+    with open(path, 'w') as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        for name, value in cookie_pairs.items():
+            f.write(f".instagram.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
+    return path
 
 
 def download_via_embed(url: str, output_path: str) -> bool:
