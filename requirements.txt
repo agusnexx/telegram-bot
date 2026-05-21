@@ -2,5 +2,6 @@ python-telegram-bot==20.7
 anthropic
 faster-whisper
 yt-dlp
+curl_cffi
 requests
 instaloader

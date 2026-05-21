@@ -57,6 +57,26 @@ def get_proxy() -> str:
     return os.environ.get("PROXY_URL", "")
 
 
+def get_tiktok_cookies_file() -> str:
+    """Write TikTok cookies to a fixed path file."""
+    from urllib.parse import unquote
+    cookies = os.environ.get("TIKTOK_COOKIES", "")
+    if not cookies:
+        return None
+    path = os.path.join(tempfile.gettempdir(), "tiktok_cookies.txt")
+    cookie_pairs = {}
+    for item in cookies.split(';'):
+        item = item.strip()
+        if '=' in item:
+            name, value = item.split('=', 1)
+            cookie_pairs[name.strip()] = unquote(value.strip())
+    with open(path, 'w') as f:
+        f.write("# Netscape HTTP Cookie File\n")
+        for name, value in cookie_pairs.items():
+            f.write(f".tiktok.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
+    return path
+
+
 def get_cookies_file() -> str:
     """Write Instagram cookies to a fixed path file (avoids NamedTemporaryFile threading issues)."""
     from urllib.parse import unquote
@@ -290,6 +310,8 @@ def download_audio(url: str, output_path: str) -> str:
     ig_password = os.environ.get("INSTAGRAM_PASSWORD", "")
     if "instagram.com" in url:
         cookies_file = get_cookies_file()
+    elif "tiktok.com" in url:
+        cookies_file = get_tiktok_cookies_file()
 
     proxy = get_proxy() if "instagram.com" in url else ""
     if "instagram.com" in url and not proxy:
