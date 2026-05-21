@@ -311,6 +311,7 @@ def download_audio(url: str, output_path: str) -> str:
         cmd = [
             "yt-dlp",
             "--no-playlist",
+            "--no-part",
             "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "--sleep-requests", "3",
@@ -365,7 +366,7 @@ def download_audio(url: str, output_path: str) -> str:
             # Re-download audio-only stream
             audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
             audio_cmd = [
-                "yt-dlp", "--no-playlist", "--format", "bestaudio",
+                "yt-dlp", "--no-playlist", "--no-part", "--format", "bestaudio",
                 "--sleep-requests", "3", "--quiet", "--output", audio_dl,
             ]
             if proxy:
