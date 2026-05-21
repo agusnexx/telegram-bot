@@ -325,17 +325,21 @@ def download_audio(url: str, output_path: str) -> str:
             cmd += ["--cookies", cookies_file]
         cmd.append(url)
 
+        stderr_log = os.path.join(tmpdir, f"ytdlp_err_{attempt}.txt")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if result.returncode != 0:
-                last_error = result.stderr[-500:]
+            with open(stderr_log, "w") as errfile:
+                ret = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=errfile, timeout=180)
+            if ret.returncode != 0:
+                last_error = open(stderr_log).read()[-500:] if os.path.exists(stderr_log) else "yt-dlp failed"
                 # 407 proxy auth failure — retry without proxy
                 if proxy and "407" in last_error:
                     print("[yt-dlp] Proxy 407, retrying without proxy...")
                     cmd_no_proxy = [c for c in cmd if c != proxy and c != "--proxy"]
-                    result2 = subprocess.run(cmd_no_proxy, capture_output=True, text=True, timeout=180)
-                    if result2.returncode != 0:
-                        last_error = result2.stderr[-500:]
+                    stderr_log2 = os.path.join(tmpdir, f"ytdlp_err_{attempt}_noproxy.txt")
+                    with open(stderr_log2, "w") as errfile2:
+                        ret2 = subprocess.run(cmd_no_proxy, stdout=subprocess.DEVNULL, stderr=errfile2, timeout=180)
+                    if ret2.returncode != 0:
+                        last_error = open(stderr_log2).read()[-500:] if os.path.exists(stderr_log2) else "yt-dlp failed"
                         continue
                 else:
                     continue
@@ -353,9 +357,9 @@ def download_audio(url: str, output_path: str) -> str:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
              "stream=codec_type", "-of", "csv=p=0", dl_file],
-            capture_output=True, text=True
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
-        has_audio = "audio" in probe.stdout
+        has_audio = "audio" in probe.stdout.decode()
 
         if not has_audio:
             # Re-download audio-only stream
@@ -372,7 +376,8 @@ def download_audio(url: str, output_path: str) -> str:
                 audio_cmd += ["--cookies", cookies_file]
             audio_cmd.append(url)
             try:
-                subprocess.run(audio_cmd, capture_output=True, text=True, timeout=180)
+                with open(os.path.join(tmpdir, "audio_err.txt"), "w") as ef:
+                    subprocess.run(audio_cmd, stdout=subprocess.DEVNULL, stderr=ef, timeout=180)
             except Exception:
                 pass
             audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
