@@ -330,45 +330,40 @@ def download_audio(url: str, output_path: str) -> str:
                 pass
 
         dl_template = os.path.join(tmpdir, "dl.%(ext)s")
-        cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--no-part",
-            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--merge-output-format", "mp4",
-            "--sleep-requests", "3",
-            "--quiet",
-            "--output", dl_template,
-        ]
+        ydl_opts = {
+            "outtmpl": dl_template,
+            "noplaylist": True,
+            "nopart": True,
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "sleep_requests": 3,
+            "quiet": True,
+        }
         if proxy:
-            cmd += ["--proxy", proxy]
+            ydl_opts["proxy"] = proxy
         if ig_username and ig_password:
-            cmd += ["--username", ig_username, "--password", ig_password]
+            ydl_opts["username"] = ig_username
+            ydl_opts["password"] = ig_password
         elif cookies_file:
-            cmd += ["--cookies", cookies_file]
-        cmd.append(url)
+            ydl_opts["cookiefile"] = cookies_file
 
-        stderr_log = os.path.join(tmpdir, f"ytdlp_err_{attempt}.txt")
         try:
-            with open(stderr_log, "w") as errfile:
-                ret = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=errfile, timeout=180)
-            if ret.returncode != 0:
-                last_error = open(stderr_log).read()[-500:] if os.path.exists(stderr_log) else "yt-dlp failed"
-                # 407 proxy auth failure — retry without proxy
-                if proxy and "407" in last_error:
-                    print("[yt-dlp] Proxy 407, retrying without proxy...")
-                    cmd_no_proxy = [c for c in cmd if c != proxy and c != "--proxy"]
-                    stderr_log2 = os.path.join(tmpdir, f"ytdlp_err_{attempt}_noproxy.txt")
-                    with open(stderr_log2, "w") as errfile2:
-                        ret2 = subprocess.run(cmd_no_proxy, stdout=subprocess.DEVNULL, stderr=errfile2, timeout=180)
-                    if ret2.returncode != 0:
-                        last_error = open(stderr_log2).read()[-500:] if os.path.exists(stderr_log2) else "yt-dlp failed"
-                        continue
-                else:
-                    continue
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
         except Exception as e:
             last_error = str(e)
-            continue
+            # 407 proxy auth failure — retry without proxy
+            if proxy and "407" in last_error:
+                print("[yt-dlp] Proxy 407, retrying without proxy...")
+                ydl_opts.pop("proxy", None)
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                except Exception as e2:
+                    last_error = str(e2)
+                    continue
+            else:
+                continue
 
         files = _glob.glob(os.path.join(tmpdir, "dl.*"))
         if not files:
@@ -380,27 +375,31 @@ def download_audio(url: str, output_path: str) -> str:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
              "stream=codec_type", "-of", "csv=p=0", dl_file],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            capture_output=True, text=True
         )
-        has_audio = "audio" in probe.stdout.decode()
+        has_audio = "audio" in probe.stdout
 
         if not has_audio:
             # Re-download audio-only stream
             audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
-            audio_cmd = [
-                "yt-dlp", "--no-playlist", "--no-part", "--format", "bestaudio",
-                "--sleep-requests", "3", "--quiet", "--output", audio_dl,
-            ]
+            audio_opts = {
+                "outtmpl": audio_dl,
+                "noplaylist": True,
+                "nopart": True,
+                "format": "bestaudio",
+                "sleep_requests": 3,
+                "quiet": True,
+            }
             if proxy:
-                audio_cmd += ["--proxy", proxy]
+                audio_opts["proxy"] = proxy
             if ig_username and ig_password:
-                audio_cmd += ["--username", ig_username, "--password", ig_password]
+                audio_opts["username"] = ig_username
+                audio_opts["password"] = ig_password
             elif cookies_file:
-                audio_cmd += ["--cookies", cookies_file]
-            audio_cmd.append(url)
+                audio_opts["cookiefile"] = cookies_file
             try:
-                with open(os.path.join(tmpdir, "audio_err.txt"), "w") as ef:
-                    subprocess.run(audio_cmd, stdout=subprocess.DEVNULL, stderr=ef, timeout=180)
+                with yt_dlp.YoutubeDL(audio_opts) as ydl:
+                    ydl.download([url])
             except Exception:
                 pass
             audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
