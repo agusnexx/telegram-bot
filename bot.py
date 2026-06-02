@@ -407,7 +407,8 @@ def download_audio(url: str, output_path: str) -> str:
                 dl_file = audio_files[0]
 
         ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1", output_path, "-y"
+            "ffmpeg", "-i", dl_file, "-map", "0:a:0", "-ar", "16000", "-ac", "1",
+            "-acodec", "pcm_s16le", output_path, "-y"
         ], capture_output=True, text=True)
         if os.path.exists(output_path):
             return output_path
@@ -871,6 +872,11 @@ def publish_tb_to_notion(handle: str, hook: str, paragraphs: list, video_url: st
 
     script_children = [_p(p) for p in paragraphs if p.strip()]
 
+    GENERAL_ELEMENTS_URL = "https://drive.google.com/drive/folders/1T_ssCuSnjQvnSiTzYM1zXnijuo1w5rc6?usp=sharing"
+
+    def _link(text, url):
+        return {"type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": text, "link": {"url": url}}}]}}
+
     top_blocks = []
     if video_url:
         top_blocks.append({
@@ -880,6 +886,8 @@ def publish_tb_to_notion(handle: str, hook: str, paragraphs: list, video_url: st
                 {"type": "text", "text": {"content": video_url, "link": {"url": video_url}}}
             ]}
         })
+    top_blocks.append(_p("General Elements:"))
+    top_blocks.append(_link(GENERAL_ELEMENTS_URL, GENERAL_ELEMENTS_URL))
     toggle_block = {
         "type": "toggle",
         "toggle": {"rich_text": [{"type": "text", "text": {"content": "Script"}, "annotations": {"bold": True}}]}
