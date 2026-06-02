@@ -405,9 +405,12 @@ def download_audio(url: str, output_path: str) -> str:
             audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
             if audio_files:
                 dl_file = audio_files[0]
+            else:
+                last_error = "Video has no audio stream and audio-only download failed"
+                continue
 
         ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", dl_file, "-map", "0:a:0", "-ar", "16000", "-ac", "1",
+            "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1",
             "-acodec", "pcm_s16le", output_path, "-y"
         ], capture_output=True, text=True)
         if os.path.exists(output_path):
