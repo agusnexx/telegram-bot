@@ -334,7 +334,7 @@ def download_audio(url: str, output_path: str) -> str:
             "outtmpl": dl_template,
             "noplaylist": True,
             "nopart": True,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "format": "bestaudio[ext=m4a]+bestvideo[ext=mp4]/best[ext=mp4]/best/bestaudio/best",
             "merge_output_format": "mp4",
             "sleep_requests": 3,
             "quiet": True,
@@ -386,7 +386,7 @@ def download_audio(url: str, output_path: str) -> str:
                 "outtmpl": audio_dl,
                 "noplaylist": True,
                 "nopart": True,
-                "format": "bestaudio",
+                "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
                 "sleep_requests": 3,
                 "quiet": True,
             }
