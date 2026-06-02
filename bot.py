@@ -58,22 +58,24 @@ def get_proxy() -> str:
 
 
 def get_tiktok_cookies_file() -> str:
-    """Write TikTok cookies to a fixed path file."""
-    from urllib.parse import unquote
     cookies = os.environ.get("TIKTOK_COOKIES", "")
     if not cookies:
         return None
     path = os.path.join(tempfile.gettempdir(), "tiktok_cookies.txt")
-    cookie_pairs = {}
-    for item in cookies.split(';'):
-        item = item.strip()
-        if '=' in item:
-            name, value = item.split('=', 1)
-            cookie_pairs[name.strip()] = unquote(value.strip())
+    # Accept Netscape format directly
+    if "# Netscape HTTP Cookie File" in cookies or "\t" in cookies:
+        with open(path, 'w') as f:
+            f.write(cookies if cookies.startswith("# Netscape") else "# Netscape HTTP Cookie File\n" + cookies)
+        return path
+    # Legacy: parse name=value; name2=value2
+    from urllib.parse import unquote
     with open(path, 'w') as f:
         f.write("# Netscape HTTP Cookie File\n")
-        for name, value in cookie_pairs.items():
-            f.write(f".tiktok.com\tTRUE\t/\tTRUE\t2999999999\t{name}\t{value}\n")
+        for item in cookies.split(';'):
+            item = item.strip()
+            if '=' in item:
+                name, value = item.split('=', 1)
+                f.write(f".tiktok.com\tTRUE\t/\tTRUE\t2999999999\t{name.strip()}\t{unquote(value.strip())}\n")
     return path
 
 
