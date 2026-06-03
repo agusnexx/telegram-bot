@@ -354,8 +354,8 @@ def download_audio(url: str, output_path: str) -> str:
                 ydl.download([url])
         except Exception as e:
             last_error = str(e)
-            # 407 proxy auth failure — retry without proxy
-            if proxy and "407" in last_error:
+            # proxy failure (407 auth, 502/503 gateway) — retry without proxy
+            if proxy and any(code in last_error for code in ("407", "502", "503", "Unable to connect to proxy")):
                 print("[yt-dlp] Proxy 407, retrying without proxy...")
                 ydl_opts.pop("proxy", None)
                 try:
