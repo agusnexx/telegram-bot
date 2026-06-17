@@ -494,7 +494,7 @@ def generate_brief(transcript: str, video_url: str, tag: str = "") -> str:
     for attempt in range(3):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=4096,
                 system=brief_prompt,
                 messages=[{
@@ -846,7 +846,7 @@ Rules: English, 4-6 paragraphs, rewrite fully (no lifted phrases), talking head 
     for attempt in range(3):
         try:
             msg = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}]
             )
