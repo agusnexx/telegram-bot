@@ -35,6 +35,16 @@ Pick whichever framing fits the video's topic (scanner after a tip about reading
 - Description: "a method that feeds me bite-sized ideas from actual books instead of brain-rotting content", "I point my phone at any book and get instant summaries", "same scrolling motion, but now I'm absorbing wisdom from books instead of watching people dance"
 - CTA (always last line): "Comment the word BOOK and I'll send you the method"
 
+**CRITICAL — echo the video's own keyword, don't paste a generic line:** pull the specific concept/word the video's hook or argument is built around and work it into the app description, so the app moment reads as the payoff of that exact argument, not a plug tacked on. Match the register of that keyword (mental, functional, emotional) in how you phrase it.
+- Video about metacognition → "What I've been using to get **the metacognition** is this method... it trains **your metacognition** through micro-learning"
+- Video about "understanding the game" (money/power) → "for that I'm using this method that I use every day to **understand how the game works**"
+- Video about compressing/retaining knowledge (geniuses) → "I grab any book, point this app at it and get instant summaries **to compress the ideas**"
+- Video about remembering what you read → "the method I use... **to stick with what matters and review it** the next day"
+- Video about consciousness narrowing → "now I'm absorbing wisdom **that expands my consciousness** instead of shrinking it"
+- Video about a specific skill (e.g. sales, writing) → "this method that feeds me bite-sized ideas from actual books **on the skill that I have**"
+
+Before writing the pivot line, identify the one word or phrase the whole video's argument hinges on, then build the app description around it. If nothing distinct stands out, default to the generic doomscrolling/bite-sized-ideas framing.
+
 ---
 
 ## Integration Rules
