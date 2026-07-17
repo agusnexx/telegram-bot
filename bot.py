@@ -731,6 +731,45 @@ def strip_title_line(brief: str) -> str:
     return '\n'.join(filtered)
 
 
+SCANNER_KEYWORDS = ("scan", "point my phone", "point it at", "point this", "point your phone")
+
+
+def post_app_moment_comment(headers: dict, script_blocks: list) -> None:
+    """Attach a B-roll direction comment to the app-integration line — mirrors
+    how these briefs get annotated by hand in Notion (e.g. "Show the screen
+    recording of the main page and the books"). Best-effort: a missing
+    "insert comment" capability on the integration shouldn't break publishing."""
+    paragraphs = [
+        b for b in script_blocks
+        if b.get("type") == "paragraph" and b["paragraph"].get("rich_text")
+    ]
+    if len(paragraphs) < 2:
+        return
+
+    # CTA is always the last line ("Comment the word BOOK..."); the app pivot is the line right before it
+    pivot_block = paragraphs[-2]
+    pivot_text = "".join(
+        rt.get("plain_text", "") for rt in pivot_block["paragraph"]["rich_text"]
+    ).lower()
+
+    if any(k in pivot_text for k in SCANNER_KEYWORDS):
+        comment_text = "Show the screen recording of the book scanner and show the slides"
+    else:
+        comment_text = "Show the screen recording of the main page and the books"
+
+    try:
+        requests.post(
+            "https://api.notion.com/v1/comments",
+            headers=headers,
+            json={
+                "parent": {"block_id": pivot_block["id"]},
+                "rich_text": [{"text": {"content": comment_text}}]
+            }
+        )
+    except requests.RequestException:
+        pass
+
+
 def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "") -> str:
     token = TF_NOTION_TOKEN if tag == 'TF' else TV_NOTION_TOKEN
     parent_id = TF_PAGE_ID if tag == 'TF' else TV_PAGE_ID
@@ -758,13 +797,14 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
 
     # Extract toggle children — Notion API doesn't reliably persist nested
     # children in the page-creation call, so we append them separately.
-    toggle_children = {}  # position -> children list
+    toggle_children = {}  # position -> (label, children list)
     flat_blocks = []
     for block in blocks:
         if block.get("type") == "toggle":
+            label = block["toggle"].get("rich_text", [{}])[0].get("text", {}).get("content", "")
             children = block["toggle"].pop("children", [])
             if children:
-                toggle_children[len(flat_blocks)] = children
+                toggle_children[len(flat_blocks)] = (label, children)
         flat_blocks.append(block)
 
     page_data = {
@@ -809,16 +849,25 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
                 break
             cursor = data.get("next_cursor")
 
-        for pos, children in toggle_children.items():
+        adapted_script_blocks = []
+        for pos, (label, children) in toggle_children.items():
             if pos < len(all_page_blocks):
                 toggle_id = all_page_blocks[pos]["id"]
+                created = []
                 for start in range(0, len(children), 100):
                     chunk = children[start:start + 100]
-                    requests.patch(
+                    r = requests.patch(
                         f"https://api.notion.com/v1/blocks/{toggle_id}/children",
                         headers=headers,
                         json={"children": chunk}
                     )
+                    if r.ok:
+                        created.extend(r.json().get("results", []))
+                if "adapted script" in label.lower():
+                    adapted_script_blocks = created
+
+        if tag == "TV" and adapted_script_blocks:
+            post_app_moment_comment(headers, adapted_script_blocks)
 
     return f"https://notion.so/{page_id.replace('-', '')}"
 
