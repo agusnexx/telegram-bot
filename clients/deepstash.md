@@ -22,24 +22,29 @@ Students looking for study shortcuts and fast ways to absorb information for cla
 
 ---
 
-## App Moments
+## App Moment
 
-### Book Scanner
-Creator picks up phone, points the camera at a real physical book, and the app instantly recognizes it and shows the AI summary. ~5-8 seconds. Casual, like they just grabbed a book off the shelf. Show the moment the app identifies the book and the summary appears — not the full read. Works best after a tip about learning faster or absorbing information.
+One integration moment per video, placed as a pivot line right before the CTA — not a mid-video demo, not two separate moments. It reads as a personal habit reveal, not a feature walkthrough. It draws on two underlying features (spoken about, framed as "a method," never filmed as a screen recording):
+- **Book Scanner** — point your phone at any book, get an instant AI summary
+- **Bookscrolling Feed** — scroll bite-sized ideas from books instead of doomscrolling
 
-### Bookscrolling Feed
-Creator picks up phone, shows the app's scrollable feed of bite-sized ideas from books — like TikTok but for knowledge. ~5-7 seconds. Casual, like they're just killing time but actually learning. Can transition from showing their phone's regular social feed to this. Works best after a tip about replacing doomscrolling or using dead time productively.
+Pick whichever framing fits the video's topic (scanner after a tip about reading/learning faster, bookscrolling after a tip about replacing doomscrolling/dead time) — don't force both into one script.
+
+**Real phrase bank** (use as templates, vary wording, don't reuse verbatim every time):
+- Pivot in: "Here's what actually worked for me", "Now here's what I use", "What I've been using is—", "For that I'm using this method that..."
+- Description: "a method that feeds me bite-sized ideas from actual books instead of brain-rotting content", "I point my phone at any book and get instant summaries", "same scrolling motion, but now I'm absorbing wisdom from books instead of watching people dance"
+- CTA (always last line): "Comment the word BOOK and I'll send you the method"
 
 ---
 
 ## Integration Rules
-- NEVER say the app name. Always refer to it as "an app," "the app," or "this app"
-- Integration must feel like a natural part of their learning routine — not a pitch
-- Two app moments per video
-- Place each app moment right after the tip that naturally sets it up (book scanner after a tip about reading/learning faster, bookscrolling after a tip about replacing social media or using dead time)
+- NEVER say the app name. Default to calling it "a method" — "an app"/"this app" is acceptable but "method" is the dominant real-world usage
+- Integration must feel like a natural part of their learning routine — not a pitch, not a feature list
+- ONE app moment per video, right before the CTA — never two separate demos, never mid-video
 - Film phone from a second device — not a screen recording. Natural angle, like showing a friend
 - Don't slow down for the app — same energy as the rest of the video
 - The app is a tool, not the topic
+- The CTA is always "Comment the word BOOK and I'll send you the method" — never a direct download pitch or link
 - NEVER include direct competitors (Blinkist, Headway, Kindle) in a positive light — use complementary tools instead (Notion, Anki, Obsidian)
 
 ---
@@ -58,7 +63,7 @@ Creator picks up phone, shows the app's scrollable feed of bite-sized ideas from
 - Keep the script as close to the original as possible — same tone, phrasing, energy
 - Trim videos over 2 minutes — cut the weakest tips to keep it tight
 - Replace tips that don't relate to reading/learning/knowledge with relevant alternatives when needed
-- Add a tip about absorbing information faster or replacing dead-time habits if one doesn't exist — this sets up the bookscrolling moment naturally
+- Add a tip about absorbing information faster or replacing dead-time habits if one doesn't exist — this sets up the app moment naturally
 - If the video is about self-improvement or discipline, lean into the "reading without reading" angle
 - If the video is about studying or school, lean into the book scanner and fast comprehension angle
 - Controversial books perform well as hooks: 1984, The 48 Laws of Power, Un Mundo Feliz, Fahrenheit 451, The Game, Lolita — use them when contextually appropriate
