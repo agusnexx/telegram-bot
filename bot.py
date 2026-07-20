@@ -319,8 +319,9 @@ def download_audio(url: str, output_path: str) -> str:
     if "instagram.com" in url and not proxy:
         print("[yt-dlp] WARNING: No PROXY_URL set. Instagram downloads from server IPs are usually blocked. Set PROXY_URL env var to fix this.")
 
-    # TikTok: use yt-dlp's own FFmpegExtractAudio postprocessor (avoids Bento4 codec issues)
+    # TikTok: handle Bento4/exotic codec issues by trying multiple strategies
     if "tiktok.com" in url:
+        # Strategy 1: yt-dlp FFmpegExtractAudio postprocessor (bestaudio → mp3 → wav)
         mp3_path = output_path.replace(".wav", ".mp3")
         tiktok_opts = {
             "outtmpl": mp3_path.replace(".mp3", ".%(ext)s"),
@@ -336,7 +337,7 @@ def download_audio(url: str, output_path: str) -> str:
             with yt_dlp.YoutubeDL(tiktok_opts) as ydl:
                 ydl.download([url])
         except Exception as e:
-            print(f"[TikTok] yt-dlp postprocessor failed: {e}")
+            print(f"[TikTok] FFmpegExtractAudio failed: {e}")
 
         audio_candidates = _glob.glob(output_path.replace(".wav", ".*"))
         for candidate in audio_candidates:
@@ -348,6 +349,26 @@ def download_audio(url: str, output_path: str) -> str:
             )
             if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
                 return output_path
+
+        # Strategy 2: download raw mp4 and return it directly (Groq accepts mp4)
+        mp4_path = output_path.replace(".wav", ".mp4")
+        raw_opts = {
+            "outtmpl": mp4_path,
+            "noplaylist": True,
+            "nopart": True,
+            "format": "best[ext=mp4]/best",
+            "quiet": True,
+        }
+        if cookies_file:
+            raw_opts["cookiefile"] = cookies_file
+        try:
+            with yt_dlp.YoutubeDL(raw_opts) as ydl:
+                ydl.download([url])
+            if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1000:
+                print(f"[TikTok] returning raw mp4 ({os.path.getsize(mp4_path)} bytes) for Groq")
+                return mp4_path
+        except Exception as e:
+            print(f"[TikTok] raw mp4 fallback failed: {e}")
 
     last_error = None
     for attempt in range(3):
@@ -420,12 +441,17 @@ def download_audio(url: str, output_path: str) -> str:
 def transcribe_audio(audio_path: str) -> dict:
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
-        # Use Groq API — whisper-large-v3, free, no local memory needed
+        ext = os.path.splitext(audio_path)[1].lower()
+        mime = {
+            ".mp3": "audio/mpeg", ".mp4": "video/mp4", ".m4a": "audio/m4a",
+            ".webm": "audio/webm", ".ogg": "audio/ogg", ".flac": "audio/flac",
+            ".wav": "audio/wav", ".mpeg": "audio/mpeg",
+        }.get(ext, "audio/wav")
         with open(audio_path, "rb") as f:
             resp = requests.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {groq_key}"},
-                files={"file": (os.path.basename(audio_path), f, "audio/wav")},
+                files={"file": (os.path.basename(audio_path), f, mime)},
                 data={"model": "whisper-large-v3", "language": "en", "response_format": "text"},
                 timeout=120,
             )
