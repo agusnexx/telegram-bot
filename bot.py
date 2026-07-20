@@ -1002,8 +1002,8 @@ def process_video(url: str, tag: str) -> dict:
     if not transcript:
         with tempfile.TemporaryDirectory() as tmpdir:
             audio_path = os.path.join(tmpdir, "audio.wav")
-            download_audio(url, audio_path)
-            transcript_data = transcribe_audio(audio_path)
+            actual_path = download_audio(url, audio_path)
+            transcript_data = transcribe_audio(actual_path or audio_path)
             transcript = transcript_data["content"]
 
     if tag == "TB":
