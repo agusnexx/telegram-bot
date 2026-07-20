@@ -319,11 +319,24 @@ def download_audio(url: str, output_path: str) -> str:
     if "instagram.com" in url and not proxy:
         print("[yt-dlp] WARNING: No PROXY_URL set. Instagram downloads from server IPs are usually blocked. Set PROXY_URL env var to fix this.")
 
-    # TikTok: Bento4 mp4 has audio that Railway ffmpeg can't demux.
-    # Download whatever format yt-dlp gives us, try wav conversion, else return raw for Groq.
+    # TikTok: yt-dlp selects DASH streams and uses ffmpeg to merge them.
+    # Railway's ffmpeg fails → resulting file has video only, no audio.
+    # Fix: force non-DASH (progressive) formats which are pre-muxed with audio.
     if "tiktok.com" in url:
         audio_base = os.path.join(tmpdir, "tiktok")
-        for fmt in ["bestaudio/best", "best[ext=mp4]/best", "best"]:
+        # Progressive mp4 from TikTok's playAddr — video+audio in one file, no ffmpeg merge needed
+        progressive_formats = [
+            "best[protocol!=http_dash_segments][ext=mp4]",
+            "best[protocol!=http_dash_segments]",
+            "worst[protocol!=http_dash_segments][ext=mp4]",  # lower quality but no DASH
+            "best",  # last resort
+        ]
+        for fmt in progressive_formats:
+            # Clean up files from previous attempt
+            for f in _glob.glob(audio_base + ".*"):
+                try: os.remove(f)
+                except: pass
+
             dl_opts = {
                 "outtmpl": audio_base + ".%(ext)s",
                 "noplaylist": True,
@@ -337,7 +350,7 @@ def download_audio(url: str, output_path: str) -> str:
                 with yt_dlp.YoutubeDL(dl_opts) as ydl:
                     ydl.download([url])
             except Exception as e:
-                print(f"[TikTok] format={fmt} download failed: {e}")
+                print(f"[TikTok] fmt={fmt} failed: {e}")
                 continue
 
             candidates = sorted(
@@ -345,27 +358,39 @@ def download_audio(url: str, output_path: str) -> str:
                 key=os.path.getsize, reverse=True
             )
             if not candidates:
-                print(f"[TikTok] format={fmt}: no file found after download")
+                print(f"[TikTok] fmt={fmt}: no file")
                 continue
 
             src = candidates[0]
-            print(f"[TikTok] format={fmt} got: {src} ({os.path.getsize(src)} bytes)")
+            print(f"[TikTok] fmt={fmt} → {src} ({os.path.getsize(src)} bytes)")
 
-            # Try converting to wav (works if ffmpeg can demux the audio)
-            for fargs in [
-                ["-vn", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
-                ["-map", "0:a:0", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
-            ]:
-                subprocess.run(["ffmpeg", "-i", src] + fargs + [output_path, "-y"],
-                                capture_output=True, text=True)
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
-                    return output_path
+            # Check this file actually has an audio stream before trying Groq
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", src],
+                capture_output=True, text=True
+            )
+            has_audio = bool(probe.stdout.strip())
+            print(f"[TikTok] has_audio={has_audio} (probe: {probe.stdout.strip()!r})")
 
-            # Wav conversion failed — return the raw file; Groq accepts mp4/m4a/webm/etc
-            print(f"[TikTok] wav failed, returning raw file for Groq: {src}")
+            if not has_audio:
+                print(f"[TikTok] fmt={fmt}: no audio stream, skipping")
+                continue
+
+            # Try wav (for local whisper fallback)
+            subprocess.run(
+                ["ffmpeg", "-i", src, "-vn", "-ar", "16000", "-ac", "1",
+                 "-acodec", "pcm_s16le", output_path, "-y"],
+                capture_output=True, text=True
+            )
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return output_path
+
+            # Return raw file — Groq accepts mp4/m4a/webm with audio track
+            print(f"[TikTok] wav failed, returning raw: {src}")
             return src
 
-        raise RuntimeError("TikTok: all download formats failed")
+        raise RuntimeError("TikTok: no format with audio track found")
 
     last_error = None
     for attempt in range(3):
