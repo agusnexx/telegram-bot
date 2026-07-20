@@ -444,6 +444,21 @@ def transcribe_audio(audio_path: str) -> dict:
             ".webm": "audio/webm", ".ogg": "audio/ogg", ".flac": "audio/flac",
             ".wav": "audio/wav", ".mpeg": "audio/mpeg",
         }.get(ext, "audio/wav")
+        fsize = os.path.getsize(audio_path)
+        print(f"[Groq] file={audio_path} ext={ext} mime={mime} size={fsize}")
+        # Groq limit is 25MB; if over, try to re-encode to mp3
+        if fsize > 24 * 1024 * 1024:
+            mp3_path = audio_path.rsplit(".", 1)[0] + "_small.mp3"
+            r = subprocess.run(
+                ["ffmpeg", "-i", audio_path, "-vn", "-acodec", "libmp3lame", "-q:a", "7",
+                 "-ar", "16000", "-ac", "1", mp3_path, "-y"],
+                capture_output=True, text=True
+            )
+            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) < 24 * 1024 * 1024:
+                audio_path, ext, mime = mp3_path, ".mp3", "audio/mpeg"
+                print(f"[Groq] re-encoded to mp3: {os.path.getsize(mp3_path)} bytes")
+            else:
+                raise RuntimeError(f"File too large for Groq ({fsize} bytes) and re-encode failed")
         with open(audio_path, "rb") as f:
             resp = requests.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -452,7 +467,8 @@ def transcribe_audio(audio_path: str) -> dict:
                 data={"model": "whisper-large-v3", "language": "en", "response_format": "text"},
                 timeout=120,
             )
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(f"Groq {resp.status_code}: {resp.text[:400]}")
         return {"content": resp.text.strip(), "lang": "en"}
 
     # Fallback: local Whisper base (fits in Railway free tier memory)
