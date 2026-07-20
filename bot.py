@@ -319,6 +319,36 @@ def download_audio(url: str, output_path: str) -> str:
     if "instagram.com" in url and not proxy:
         print("[yt-dlp] WARNING: No PROXY_URL set. Instagram downloads from server IPs are usually blocked. Set PROXY_URL env var to fix this.")
 
+    # TikTok: use yt-dlp's own FFmpegExtractAudio postprocessor (avoids Bento4 codec issues)
+    if "tiktok.com" in url:
+        mp3_path = output_path.replace(".wav", ".mp3")
+        tiktok_opts = {
+            "outtmpl": mp3_path.replace(".mp3", ".%(ext)s"),
+            "noplaylist": True,
+            "nopart": True,
+            "format": "bestaudio/best",
+            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "128"}],
+            "quiet": True,
+        }
+        if cookies_file:
+            tiktok_opts["cookiefile"] = cookies_file
+        try:
+            with yt_dlp.YoutubeDL(tiktok_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            print(f"[TikTok] yt-dlp postprocessor failed: {e}")
+
+        audio_candidates = _glob.glob(output_path.replace(".wav", ".*"))
+        for candidate in audio_candidates:
+            if candidate.endswith(".wav"):
+                continue
+            r = subprocess.run(
+                ["ffmpeg", "-i", candidate, "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", output_path, "-y"],
+                capture_output=True, text=True
+            )
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return output_path
+
     last_error = None
     for attempt in range(3):
         if attempt > 0:
@@ -354,7 +384,6 @@ def download_audio(url: str, output_path: str) -> str:
                 ydl.download([url])
         except Exception as e:
             last_error = str(e)
-            # proxy failure (407 auth, 502/503 gateway) — retry without proxy
             if proxy and any(code in last_error for code in ("407", "502", "503", "Unable to connect to proxy")):
                 print("[yt-dlp] Proxy 407, retrying without proxy...")
                 ydl_opts.pop("proxy", None)
@@ -373,45 +402,6 @@ def download_audio(url: str, output_path: str) -> str:
             continue
         dl_file = files[0]
 
-        # Check if file has audio stream
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
-             "stream=codec_type", "-of", "csv=p=0", dl_file],
-            capture_output=True, text=True
-        )
-        has_audio = "audio" in probe.stdout
-
-        if not has_audio:
-            # Re-download audio-only stream
-            audio_dl = os.path.join(tmpdir, "audio_only.%(ext)s")
-            audio_opts = {
-                "outtmpl": audio_dl,
-                "noplaylist": True,
-                "nopart": True,
-                "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
-                "sleep_requests": 3,
-                "quiet": True,
-            }
-            if proxy:
-                audio_opts["proxy"] = proxy
-            if ig_username and ig_password:
-                audio_opts["username"] = ig_username
-                audio_opts["password"] = ig_password
-            elif cookies_file:
-                audio_opts["cookiefile"] = cookies_file
-            try:
-                with yt_dlp.YoutubeDL(audio_opts) as ydl:
-                    ydl.download([url])
-            except Exception:
-                pass
-            audio_files = _glob.glob(os.path.join(tmpdir, "audio_only.*"))
-            if audio_files:
-                dl_file = audio_files[0]
-            else:
-                last_error = "Video has no audio stream and audio-only download failed"
-                continue
-
-        # Try with explicit audio stream mapping first (fixes Bento4/TikTok "no stream" error)
         for ffmpeg_args in [
             ["-map", "0:a:0", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
             ["-vn", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
@@ -420,10 +410,8 @@ def download_audio(url: str, output_path: str) -> str:
                 ["ffmpeg", "-i", dl_file] + ffmpeg_args + [output_path, "-y"],
                 capture_output=True, text=True
             )
-            if os.path.exists(output_path):
-                break
-        if os.path.exists(output_path):
-            return output_path
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                return output_path
         last_error = f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}"
 
     raise RuntimeError(f"yt-dlp error: {last_error}")
