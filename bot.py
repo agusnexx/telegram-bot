@@ -411,10 +411,17 @@ def download_audio(url: str, output_path: str) -> str:
                 last_error = "Video has no audio stream and audio-only download failed"
                 continue
 
-        ffmpeg_result = subprocess.run([
-            "ffmpeg", "-i", dl_file, "-vn", "-ar", "16000", "-ac", "1",
-            "-acodec", "pcm_s16le", output_path, "-y"
-        ], capture_output=True, text=True)
+        # Try with explicit audio stream mapping first (fixes Bento4/TikTok "no stream" error)
+        for ffmpeg_args in [
+            ["-map", "0:a:0", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
+            ["-vn", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le"],
+        ]:
+            ffmpeg_result = subprocess.run(
+                ["ffmpeg", "-i", dl_file] + ffmpeg_args + [output_path, "-y"],
+                capture_output=True, text=True
+            )
+            if os.path.exists(output_path):
+                break
         if os.path.exists(output_path):
             return output_path
         last_error = f"ffmpeg failed: {ffmpeg_result.stderr[-400:]}"
