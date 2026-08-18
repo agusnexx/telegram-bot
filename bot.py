@@ -2,6 +2,9 @@ import asyncio
 import os
 import re
 import json
+import base64
+import glob
+import io
 import tempfile
 import subprocess
 import time
@@ -343,6 +346,7 @@ def download_audio(url: str, output_path: str) -> str:
                 "nopart": True,
                 "format": fmt,
                 "quiet": True,
+                "concurrent_fragment_downloads": 1,  # yt-dlp's fragment thread pool deadlocks (Errno 11) on this setup
             }
             if cookies_file:
                 dl_opts["cookiefile"] = cookies_file
@@ -413,6 +417,7 @@ def download_audio(url: str, output_path: str) -> str:
             "merge_output_format": "mp4",
             "sleep_requests": 3,
             "quiet": True,
+            "concurrent_fragment_downloads": 1,  # yt-dlp's fragment thread pool deadlocks (Errno 11) on this setup
         }
         if proxy:
             ydl_opts["proxy"] = proxy
@@ -460,6 +465,286 @@ def download_audio(url: str, output_path: str) -> str:
     raise RuntimeError(f"yt-dlp error: {last_error}")
 
 
+# ── Reference Images ───────────────────────────────────────────────────────────
+# Detects photos/screenshots the creator pastes into the video as overlays
+# (e.g. a historical photo shown while talking) — not the creator's own
+# camera framing. Any failure here is swallowed so it never blocks the
+# transcript/brief/publish flow.
+
+def find_downloaded_video(tmpdir: str) -> str | None:
+    """download_audio() leaves the source video behind in tmpdir before
+    extracting audio — naming varies by which download path succeeded
+    (dl.*, tiktok.*, audio.mp4, audio.audio_raw, ...), so rather than
+    enumerate every convention, just take the largest non-wav, non-partial
+    file in the dir — that's reliably the video, never the extracted audio."""
+    candidates = [
+        f for f in glob.glob(os.path.join(tmpdir, "*"))
+        if os.path.isfile(f) and not f.endswith((".wav", ".part", ".json"))
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getsize)
+
+
+def extract_scene_frames(video_path: str, out_dir: str, max_frames: int = 16) -> list[tuple[str, float]]:
+    """Pulls one frame per scene change (where an inserted image is most
+    likely to appear/disappear) plus the very first frame."""
+    pattern = os.path.join(out_dir, "frame_%03d.jpg")
+    result = subprocess.run(
+        ["ffmpeg", "-i", video_path, "-vf",
+         "select='eq(n,0)+gt(scene,0.25)',showinfo", "-vsync", "vfr", pattern, "-y"],
+        capture_output=True, text=True
+    )
+    timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
+    frames = sorted(glob.glob(os.path.join(out_dir, "frame_*.jpg")))
+    paired = list(zip(frames, timestamps)) if len(timestamps) == len(frames) else [(f, 0.0) for f in frames]
+
+    if len(paired) > max_frames:
+        step = len(paired) / max_frames
+        paired = [paired[int(i * step)] for i in range(max_frames)]
+
+    return paired
+
+
+def detect_reference_images(frames: list[tuple[str, float]]) -> list[dict]:
+    """Asks Claude which sampled frames contain an inserted reference image
+    (a photo/meme/screenshot pasted into the video) as opposed to the
+    creator's own camera view. Returns [{path, timestamp, region, description}]."""
+    if not frames:
+        return []
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    detections = []
+
+    for batch_start in range(0, len(frames), 6):
+        batch = frames[batch_start:batch_start + 6]
+        content = []
+        for i, (path, ts) in enumerate(batch):
+            with open(path, "rb") as f:
+                b64 = base64.standard_b64encode(f.read()).decode()
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
+            content.append({"type": "text", "text": f"Frame {i} (t={ts:.1f}s)"})
+        content.append({"type": "text", "text": (
+            "For each numbered frame above, tell me if it contains an inserted reference "
+            "image (a photo, meme, screenshot, or graphic pasted into the video) that is "
+            "NOT the creator's own camera view of themselves or their room. These overlays "
+            "can be any size, position, AND aspect ratio — a small corner box, a strip across "
+            "the top or bottom (sometimes two side-by-side stills in that strip), or a large "
+            "centered image. Many of these are wide/landscape movie stills — do not assume "
+            "they're the same tall/vertical shape as the video frame itself; trace their own "
+            "actual left/right/top/bottom edges, whatever shape that turns out to be. If a "
+            "still is letterboxed (black/gray bars above and below it), the box must exclude "
+            "those bars entirely and hug only the actual photo content.\n\n"
+            "Reply with ONLY a JSON array, one entry per frame that HAS an overlay "
+            "(skip frames with no overlay entirely). \"box\" is the TIGHT bounding box around "
+            "ONLY the inserted image's actual pixel content — err slightly INSIDE the true edge "
+            "rather than outside it, so nothing but the photo itself is included: no decorative "
+            "card border/frame/rounded-corner background, no letterbox bars, no sliver of the "
+            "creator's own camera view. Coordinates are fractions of the frame's width/height "
+            "(0.0 = left/top edge, 1.0 = right/bottom edge). If there are two stills side by "
+            "side, box should cover both together, still excluding any shared border around them:\n"
+            '[{"frame": 0, "box": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.3}, '
+            '"description": "short description of the image"}]\n'
+            "If no frame has an overlay, reply with []."
+        )})
+
+        try:
+            message = client.messages.create(
+                model="claude-opus-5",
+                max_tokens=2048,
+                output_config={"effort": "low"},
+                messages=[{"role": "user", "content": content}]
+            )
+            text = next((b.text for b in message.content if b.type == "text"), "")
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            batch_detections = json.loads(match.group(0)) if match else []
+        except Exception as e:
+            print(f"  [reference-images error] batch {batch_start}: {e}")
+            batch_detections = []
+
+        for d in batch_detections:
+            idx = d.get("frame")
+            if idx is None or not (0 <= idx < len(batch)):
+                continue
+            path, ts = batch[idx]
+            box = d.get("box") or {}
+            detections.append({
+                "path": path, "timestamp": ts,
+                "box": (
+                    float(box.get("x0", 0.0)), float(box.get("y0", 0.0)),
+                    float(box.get("x1", 1.0)), float(box.get("y1", 1.0)),
+                ),
+                "description": d.get("description", "")
+            })
+
+    return detections
+
+
+def crop_region(image_path: str, box: tuple[float, float, float, float]) -> bytes:
+    """box is (x0, y0, x1, y1) as fractions of the frame — cropped exactly, no
+    added margin, so nothing outside the inserted image (the creator's own
+    camera view, a card border, etc.) bleeds into the crop."""
+    from PIL import Image
+    img = Image.open(image_path)
+    w, h = img.size
+    x0, y0, x1, y1 = box
+    if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+        x0, y0, x1, y1 = 0.0, 0.0, 1.0, 1.0  # malformed box from the model — fall back to full frame
+    # Shrink slightly inward — the model's box tends to hug the true edge closely
+    # rather than overshoot it, so err on cropping a bit tighter, not looser.
+    erode_x, erode_y = (x1 - x0) * 0.03, (y1 - y0) * 0.03
+    x0, y0, x1, y1 = x0 + erode_x, y0 + erode_y, x1 - erode_x, y1 - erode_y
+    cropped = img.crop((int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)))
+    buf = io.BytesIO()
+    cropped.convert("RGB").save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+def dedupe_detections(detections: list[dict]) -> list[dict]:
+    """Collapses repeated detections of the same overlay lingering across
+    several consecutive scene cuts into a single representative crop."""
+    kept = []
+    for d in sorted(detections, key=lambda x: x["timestamp"]):
+        dup = next((k for k in kept
+                    if abs(k["timestamp"] - d["timestamp"]) < 5
+                    and k["description"][:25].lower() == d["description"][:25].lower()), None)
+        if not dup:
+            kept.append(d)
+    return kept
+
+
+def context_at_timestamp(segments: list[dict], ts: float) -> str:
+    """Original-transcript text being spoken at (or nearest to) a given video timestamp."""
+    if not segments:
+        return ""
+    for seg in segments:
+        if seg["start"] <= ts <= seg["end"]:
+            return seg["text"]
+    return min(segments, key=lambda s: min(abs(s["start"] - ts), abs(s["end"] - ts)))["text"]
+
+
+def extract_reference_images(video_path: str | None, segments: list[dict] = None) -> list[dict]:
+    """Full pipeline: scene-detect candidate frames, ask Claude which ones
+    have an inserted reference image, crop those, dedupe. Returns
+    [{"bytes": jpg_bytes, "caption": str, "timestamp": float, "original_context": str}, ...]
+    — empty list on any failure (including no video_path), never blocks the main brief/publish flow."""
+    if not video_path:
+        return []
+    try:
+        with tempfile.TemporaryDirectory() as frames_dir:
+            frames = extract_scene_frames(video_path, frames_dir)
+            detections = dedupe_detections(detect_reference_images(frames))
+            return [
+                {
+                    "bytes": crop_region(d["path"], d["box"]),
+                    "caption": d["description"],
+                    "timestamp": d["timestamp"],
+                    "original_context": context_at_timestamp(segments or [], d["timestamp"]),
+                }
+                for d in detections
+            ]
+    except Exception as e:
+        print(f"  [reference-images] pipeline failed: {e}")
+        return []
+
+
+# ── On-screen Text Headers ──────────────────────────────────────────────────────
+# Detects large title/header text burned into the video (e.g. "10/10 Habits To
+# Build Extreme Aura") — a visual overlay, not a spoken script line. Distinct
+# from Reference Images: this looks for TEXT graphics, not inserted photos.
+
+def detect_text_headers(frames: list[tuple[str, float]]) -> list[dict]:
+    """Asks Claude which sampled frames show a large on-screen text title/header
+    card — text overlaid/burned into the video as a graphic — as opposed to
+    small captions, UI elements, or auto-generated subtitles. Returns
+    [{"timestamp": float, "text": str}]."""
+    if not frames:
+        return []
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    headers = []
+
+    for batch_start in range(0, len(frames), 6):
+        batch = frames[batch_start:batch_start + 6]
+        content = []
+        for i, (path, ts) in enumerate(batch):
+            with open(path, "rb") as f:
+                b64 = base64.standard_b64encode(f.read()).decode()
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
+            content.append({"type": "text", "text": f"Frame {i} (t={ts:.1f}s)"})
+        content.append({"type": "text", "text": (
+            "For each numbered frame above, tell me if it contains a large on-screen TEXT "
+            "TITLE/HEADER card — big bold text graphics burned into the video (like a video "
+            "title card, a numbered-list intro, or a section header), as opposed to small "
+            "captions, UI chrome, or auto-generated word-by-word subtitles.\n\n"
+            "Reply with ONLY a JSON array, one entry per frame that HAS a title/header card "
+            "(skip frames with no such text entirely):\n"
+            '[{"frame": 0, "text": "exact text shown, as written, including any subtitle line under it"}]\n'
+            "If no frame has one, reply with []."
+        )})
+
+        try:
+            message = client.messages.create(
+                model="claude-opus-5",
+                max_tokens=2048,
+                output_config={"effort": "low"},
+                messages=[{"role": "user", "content": content}]
+            )
+            text = next((b.text for b in message.content if b.type == "text"), "")
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            batch_headers = json.loads(match.group(0)) if match else []
+        except Exception as e:
+            print(f"  [text-header error] batch {batch_start}: {e}")
+            batch_headers = []
+
+        for d in batch_headers:
+            idx = d.get("frame")
+            if idx is None or not (0 <= idx < len(batch)):
+                continue
+            _, ts = batch[idx]
+            headers.append({"timestamp": ts, "text": d.get("text", "")})
+
+    return headers
+
+
+def dedupe_headers(headers: list[dict]) -> list[dict]:
+    """Collapses the same title card lingering across several consecutive
+    scene cuts into a single representative detection."""
+    kept = []
+    for h in sorted(headers, key=lambda x: x["timestamp"]):
+        dup = next((k for k in kept
+                    if abs(k["timestamp"] - h["timestamp"]) < 5
+                    and k["text"][:25].lower() == h["text"][:25].lower()), None)
+        if not dup:
+            kept.append(h)
+    return kept
+
+
+def extract_text_headers(video_path: str | None, segments: list[dict] = None) -> list[dict]:
+    """Full pipeline: scene-detect candidate frames, ask Claude which ones show
+    an on-screen title/header card, dedupe, attach original-transcript context
+    for matching against the adapted script later. Returns
+    [{"text": str, "timestamp": float, "original_context": str}, ...] —
+    empty list on any failure, never blocks the main brief/publish flow."""
+    if not video_path:
+        return []
+    try:
+        with tempfile.TemporaryDirectory() as frames_dir:
+            frames = extract_scene_frames(video_path, frames_dir)
+            headers = dedupe_headers(detect_text_headers(frames))
+            return [
+                {
+                    "text": h["text"],
+                    "timestamp": h["timestamp"],
+                    "original_context": context_at_timestamp(segments or [], h["timestamp"]),
+                }
+                for h in headers
+            ]
+    except Exception as e:
+        print(f"  [text-headers] pipeline failed: {e}")
+        return []
+
+
 def transcribe_audio(audio_path: str) -> dict:
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
@@ -489,17 +774,19 @@ def transcribe_audio(audio_path: str) -> dict:
                 "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {groq_key}"},
                 files={"file": (os.path.basename(audio_path), f, mime)},
-                data={"model": "whisper-large-v3", "language": "en", "response_format": "text"},
+                data={"model": "whisper-large-v3", "language": "en", "response_format": "verbose_json"},
                 timeout=120,
             )
         if not resp.ok:
             raise RuntimeError(f"Groq {resp.status_code}: {resp.text[:400]}")
-        return {"content": resp.text.strip(), "lang": "en"}
+        data = resp.json()
+        segs = [{"start": s["start"], "end": s["end"], "text": s["text"].strip()} for s in data.get("segments", [])]
+        return {"content": data["text"].strip(), "lang": "en", "segments": segs}
 
     # Fallback: local Whisper base (fits in Railway free tier memory)
     from faster_whisper import WhisperModel
     model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, info = model.transcribe(
+    raw_segments, info = model.transcribe(
         audio_path,
         language="en",
         beam_size=5,
@@ -508,8 +795,12 @@ def transcribe_audio(audio_path: str) -> dict:
         vad_filter=True,
         no_speech_threshold=0.6,
     )
-    text = " ".join([seg.text for seg in segments]).strip()
-    return {"content": text, "lang": info.language}
+    segs = []
+    texts = []
+    for seg in raw_segments:
+        texts.append(seg.text)
+        segs.append({"start": seg.start, "end": seg.end, "text": seg.text.strip()})
+    return {"content": " ".join(texts).strip(), "lang": info.language, "segments": segs}
 
 
 DEEPSTASH_INTEGRATION_RULES = """
@@ -829,7 +1120,185 @@ def post_app_moment_comment(headers: dict, script_blocks: list) -> None:
         pass
 
 
-def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "") -> str:
+def upload_image_to_notion(image_bytes: bytes, filename: str, token: str) -> str | None:
+    """Uploads one image via Notion's File Upload API, returns the file_upload id."""
+    try:
+        resp = requests.post(
+            "https://api.notion.com/v1/file_uploads",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Notion-Version": "2026-03-11",
+                "Content-Type": "application/json",
+            },
+            json={"mode": "single_part", "filename": filename, "content_type": "image/jpeg"}
+        )
+        resp.raise_for_status()
+        upload_id = resp.json()["id"]
+
+        send_resp = requests.post(
+            f"https://api.notion.com/v1/file_uploads/{upload_id}/send",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": "2026-03-11"},
+            files={"file": (filename, image_bytes, "image/jpeg")}
+        )
+        send_resp.raise_for_status()
+        return upload_id
+    except Exception as e:
+        print(f"  [notion upload error] {filename}: {e}")
+        return None
+
+
+def create_notion_text_comment(block_id: str, text: str, token: str) -> bool:
+    try:
+        resp = requests.post(
+            "https://api.notion.com/v1/comments",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"},
+            json={
+                "parent": {"type": "block_id", "block_id": block_id},
+                "rich_text": [{"type": "text", "text": {"content": text}}]
+            }
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"  [notion comment error] {e}")
+        return False
+
+
+def match_images_to_adapted_script(reference_images: list[dict], adapted_lines: list[str]) -> dict[int, dict]:
+    """For each reference image (with its original-transcript context), asks Claude
+    which line of the ADAPTED script covers that same moment, and the exact substring
+    to underline there. Returns {line_index: {"image": img_dict, "quote": str}}."""
+    if not reference_images or not adapted_lines:
+        return {}
+
+    numbered = "\n".join(f"{i}: {line}" for i, line in enumerate(adapted_lines))
+    images_desc = "\n".join(
+        f'{j}. Original line: "{img.get("original_context", "")}" — image shown: {img.get("caption", "")}'
+        for j, img in enumerate(reference_images)
+    )
+    prompt = (
+        f"Adapted script (numbered lines):\n{numbered}\n\n"
+        f"Images found in the original video, with what was being said in the ORIGINAL "
+        f"transcript when each one appeared:\n{images_desc}\n\n"
+        "Every image MUST be assigned to a line — pick whichever line is the CLOSEST match "
+        "even if it's not a perfect one; there is no option to skip an image. For each image, "
+        "give the exact substring (word-for-word, must appear verbatim in that line) to "
+        "underline. Reply ONLY as a JSON array with exactly one entry per image:\n"
+        '[{"image": 0, "line": 3, "quote": "exact substring from that line"}]'
+    )
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-opus-5", max_tokens=1024, output_config={"effort": "low"},
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        raw = json.loads(m.group(0)) if m else []
+    except Exception as e:
+        print(f"  [image-match error] {e}")
+        return {}
+
+    result = {}
+    for r in raw:
+        img_idx, line_idx, quote = r.get("image"), r.get("line"), r.get("quote", "")
+        if img_idx is None or line_idx is None or not quote:
+            continue
+        if not (0 <= img_idx < len(reference_images)) or not (0 <= line_idx < len(adapted_lines)):
+            continue
+        if quote not in adapted_lines[line_idx]:
+            quote = adapted_lines[line_idx]  # non-verbatim quote — underline the whole line instead of dropping the image
+        result[line_idx] = {"image": reference_images[img_idx], "quote": quote}
+    return result
+
+
+def match_headers_to_adapted_script(text_headers: list[dict], adapted_lines: list[str]) -> dict[int, str]:
+    """Matches each detected on-screen text header to the ADAPTED script line
+    covering that same moment, numbers them in order of appearance in the
+    video, and returns {line_index: "Header: N. Title"}."""
+    if not text_headers or not adapted_lines:
+        return {}
+
+    ordered = sorted(text_headers, key=lambda h: h["timestamp"])
+    numbered = "\n".join(f"{i}: {line}" for i, line in enumerate(adapted_lines))
+    headers_desc = "\n".join(
+        f'{j}. Original line when shown: "{h.get("original_context", "")}" — on-screen text: "{h["text"]}"'
+        for j, h in enumerate(ordered)
+    )
+    prompt = (
+        f"Adapted script (numbered lines):\n{numbered}\n\n"
+        f"On-screen text headers found in the original video, in order of appearance, with "
+        f"what was being said in the ORIGINAL transcript when each appeared:\n{headers_desc}\n\n"
+        "For each header, find which line of the ADAPTED script covers that same moment/topic. "
+        "Reply ONLY as a JSON array:\n"
+        '[{"header": 0, "line": 3}]\n'
+        "Skip a header only if it truly has no corresponding line in the adapted script."
+    )
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-opus-5", max_tokens=1024, output_config={"effort": "low"},
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        raw = json.loads(m.group(0)) if m else []
+    except Exception as e:
+        print(f"  [header-match error] {e}")
+        return {}
+
+    result = {}
+    for r in raw:
+        h_idx, line_idx = r.get("header"), r.get("line")
+        if h_idx is None or line_idx is None:
+            continue
+        if not (0 <= h_idx < len(ordered)) or not (0 <= line_idx < len(adapted_lines)):
+            continue
+        result[line_idx] = f"Header: {h_idx + 1}. {ordered[h_idx]['text']}"
+    return result
+
+
+def underline_paragraph_block(text: str, quote: str):
+    """Paragraph block with one substring underlined, formatting (e.g. **bold**)
+    preserved outside the underlined span."""
+    start = text.find(quote)
+    if start == -1:
+        return paragraph_block(text)
+    before, after = text[:start], text[start + len(quote):]
+    parts = []
+    if before:
+        parts.extend(parse_rich_text(before))
+    parts.append({"type": "text", "text": {"content": quote}, "annotations": {"underline": True}})
+    if after:
+        parts.extend(parse_rich_text(after))
+    return {"type": "paragraph", "paragraph": {"rich_text": parts}}
+
+
+def create_notion_comment_with_image(block_id: str, image_bytes: bytes, token: str) -> bool:
+    """Returns True on success. On failure (e.g. the integration doesn't have
+    "Insert comments" enabled) the caller falls back to the Reference Images
+    gallery so the image is never silently lost."""
+    file_id = upload_image_to_notion(image_bytes, "reference.jpg", token)
+    if not file_id:
+        return False
+    try:
+        resp = requests.post(
+            "https://api.notion.com/v1/comments",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": "2026-03-11", "Content-Type": "application/json"},
+            json={
+                "parent": {"type": "block_id", "block_id": block_id},
+                "rich_text": [],
+                "attachments": [{"type": "file_upload", "file_upload_id": file_id}]
+            }
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"  [notion comment error] {e}")
+        return False
+
+
+def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "", reference_images: list[dict] = None, text_headers: list[dict] = None) -> str:
     token = TF_NOTION_TOKEN if tag == 'TF' else TV_NOTION_TOKEN
     parent_id = TF_PAGE_ID if tag == 'TF' else TV_PAGE_ID
 
@@ -853,6 +1322,30 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
                 label = block["toggle"].get("rich_text", [{}])[0].get("text", {}).get("content", "").lower()
                 if "original script" in label:
                     block["toggle"]["children"] = transcript_blocks
+
+    # Match reference images to the ADAPTED script (not the original transcript) and
+    # underline the line that references each one, and detect enumerated-list
+    # headers (e.g. "10 habits", "top 3 ways") to comment separately — both
+    # comments go on their line once its block ID exists in Notion (further down).
+    image_matches = {}
+    list_headers = {}
+    for block in blocks:
+        if block.get("type") == "toggle":
+            label = block["toggle"].get("rich_text", [{}])[0].get("text", {}).get("content", "").lower()
+            if "adapted script" not in label:
+                continue
+            children = block["toggle"].get("children", [])
+            adapted_lines = [
+                "".join(r.get("text", {}).get("content", "") for r in child["paragraph"]["rich_text"])
+                for child in children
+            ]
+            if text_headers:
+                list_headers = match_headers_to_adapted_script(text_headers, adapted_lines)
+            if reference_images:
+                image_matches = match_images_to_adapted_script(reference_images, adapted_lines)
+                for line_idx, match in image_matches.items():
+                    children[line_idx] = underline_paragraph_block(adapted_lines[line_idx], match["quote"])
+            break
 
     # Extract toggle children — Notion API doesn't reliably persist nested
     # children in the page-creation call, so we append them separately.
@@ -927,6 +1420,24 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
 
         if tag == "TV" and adapted_script_blocks:
             post_app_moment_comment(headers, adapted_script_blocks)
+
+        # Now that the adapted-script blocks exist in Notion, attach every
+        # reference image as a comment on its matched, underlined line.
+        # Every image is assigned a line by match_images_to_adapted_script (no
+        # skipping), so there's no separate gallery — a failed post (e.g. API
+        # error) is just logged, never surfaced as a visible fallback block.
+        for line_idx, match in image_matches.items():
+            if line_idx < len(adapted_script_blocks):
+                create_notion_comment_with_image(
+                    adapted_script_blocks[line_idx]["id"],
+                    match["image"]["bytes"],
+                    token
+                )
+
+        # Comment "Header: N. Title" on each detected list-item announcement line.
+        for line_idx, header_text in list_headers.items():
+            if line_idx < len(adapted_script_blocks):
+                create_notion_text_comment(adapted_script_blocks[line_idx]["id"], header_text, token)
 
     return f"https://notion.so/{page_id.replace('-', '')}"
 
@@ -1035,6 +1546,8 @@ def publish_tb_to_notion(handle: str, hook: str, paragraphs: list, video_url: st
 
 def process_video(url: str, tag: str) -> dict:
     transcript = ""
+    reference_images = []
+    text_headers = []
 
     # Fathom: try to get transcript directly from the page (faster, no download)
     if "fathom.video" in url:
@@ -1047,6 +1560,12 @@ def process_video(url: str, tag: str) -> dict:
             transcript_data = transcribe_audio(actual_path or audio_path)
             transcript = transcript_data["content"]
 
+            # Must run inside the tmpdir block — the downloaded video file
+            # gets deleted as soon as this "with" exits.
+            video_path = find_downloaded_video(tmpdir)
+            reference_images = extract_reference_images(video_path, transcript_data.get("segments"))
+            text_headers = extract_text_headers(video_path, transcript_data.get("segments"))
+
     if tag == "TB":
         handle = extract_handle_from_url(url)
         hook = next((s.strip() for s in transcript.split('.') if s.strip()), transcript[:80])
@@ -1055,7 +1574,7 @@ def process_video(url: str, tag: str) -> dict:
         return {"url": page_url, "hook": hook}
 
     brief = generate_brief(transcript, url, tag=tag)
-    page_url = publish_to_notion(brief, tag, url, transcript=transcript)
+    page_url = publish_to_notion(brief, tag, url, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
 
     hook = ""
     for line in brief.split('\n'):
@@ -1079,8 +1598,11 @@ def process_video_file(file_path: str, tag: str, original_filename: str) -> dict
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
 
+    reference_images = extract_reference_images(file_path, transcript_data.get("segments"))
+    text_headers = extract_text_headers(file_path, transcript_data.get("segments"))
+
     brief = generate_brief(transcript, original_filename)
-    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript)
+    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
 
     hook = ""
     for line in brief.split('\n'):
