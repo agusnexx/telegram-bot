@@ -510,8 +510,9 @@ def detect_overlays(frames: list[tuple[str, float]]) -> tuple[list[dict], list[d
     """Single vision pass per frame batch — detects both (a) inserted reference
     images/photos overlaid on the video and (b) on-screen text title/header
     cards, in one call instead of two (halves vision-token cost, since each
-    frame's image bytes would otherwise be sent twice). Uses Haiku — this is
-    mechanical classification, not writing, so the cheaper model is enough.
+    frame's image bytes would otherwise be sent twice). Uses Sonnet — Haiku
+    was tried here first but hallucinated garbled on-screen text for the
+    header pass, so this specific vision read needs the stronger model.
     Returns (image_detections, header_detections)."""
     if not frames:
         return [], []
@@ -562,7 +563,7 @@ def detect_overlays(frames: list[tuple[str, float]]) -> tuple[list[dict], list[d
 
         try:
             message = client.messages.create(
-                model="claude-haiku-4-5",
+                model="claude-sonnet-4-6",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": content}]
             )
@@ -612,8 +613,15 @@ def crop_region(image_path: str, box: tuple[float, float, float, float]) -> byte
     # Shrink inward — the model's box tends to run a bit loose, leaving slivers of
     # the creator's own camera view or the video's own edges in the crop. Erring
     # tighter (losing a thin margin of the actual overlay) beats bleed-through.
-    erode_x, erode_y = (x1 - x0) * 0.07, (y1 - y0) * 0.07
-    x0, y0, x1, y1 = x0 + erode_x, y0 + erode_y, x1 - erode_x, y1 - erode_y
+    # The bottom edge is where the creator's hair/head consistently bleeds in
+    # (they're usually framed low in the shot), so it gets cropped harder than
+    # the other three sides.
+    width, height = x1 - x0, y1 - y0
+    erode_side, erode_bottom = width * 0.08, height * 0.20
+    ex0, ey0, ex1 = x0 + erode_side, y0 + height * 0.08, x1 - erode_side
+    ey1 = y1 - erode_bottom
+    if ex1 > ex0 and ey1 > ey0:  # box too small to erode without inverting — use it as-is
+        x0, y0, x1, y1 = ex0, ey0, ex1, ey1
     cropped = img.crop((int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)))
     buf = io.BytesIO()
     cropped.convert("RGB").save(buf, format="JPEG", quality=90)
@@ -643,53 +651,7 @@ def context_at_timestamp(segments: list[dict], ts: float) -> str:
     return min(segments, key=lambda s: min(abs(s["start"] - ts), abs(s["end"] - ts)))["text"]
 
 
-def find_similar_image_links(descriptions: list[str]) -> dict[int, str]:
-    """"collage"-type overlays can't be cropped cleanly (the creator's own body
-    covers part of them), so instead of a pixel crop, search the web for a
-    similar image the creator could actually source and use. Batches ALL
-    descriptions from one video into a SINGLE web-search call instead of one
-    call per image — cuts the (expensive) agentic search overhead by however
-    many collage images the video has. Returns {index: url} for whichever
-    descriptions got a usable match; a missing index means no match found."""
-    if not descriptions:
-        return {}
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        numbered = "\n".join(f"{i}. {d}" for i, d in enumerate(descriptions))
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1536,
-            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3 * len(descriptions)}],
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"For each numbered image description below, search the web (Pinterest, "
-                    f"Google Images, stock/art sites) for a similar image someone could "
-                    f"actually open and reuse as a background/reference graphic:\n{numbered}\n\n"
-                    "Reply with ONLY a JSON array, one entry per description that found a "
-                    "usable match (omit any that found nothing relevant):\n"
-                    '[{"index": 0, "url": "https://..."}]'
-                )
-            }]
-        )
-        # Web search runs as multiple tool_use/tool_result turns inline in one
-        # response — several text blocks can appear (preamble, then the real
-        # answer after seeing results), so take the LAST one, not the first.
-        text_blocks = [b.text for b in message.content if b.type == "text"]
-        text = text_blocks[-1].strip() if text_blocks else ""
-        m = re.search(r"\[.*\]", text, re.DOTALL)
-        raw = json.loads(m.group(0)) if m else []
-    except Exception as e:
-        print(f"  [image-search error] {e}")
-        return {}
-
-    result = {}
-    for r in raw:
-        idx, url = r.get("index"), r.get("url")
-        if idx is None or not url or not (0 <= idx < len(descriptions)):
-            continue
-        result[idx] = url
-    return result
+GENERAL_ELEMENTS_DRIVE_URL = "https://drive.google.com/drive/folders/1T_ssCuSnjQvnSiTzYM1zXnijuo1w5rc6?usp=sharing"
 
 
 def dedupe_headers(headers: list[dict]) -> list[dict]:
@@ -705,21 +667,21 @@ def dedupe_headers(headers: list[dict]) -> list[dict]:
     return kept
 
 
-def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tuple[list[dict], list[dict]]:
+def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tuple[list[dict], list[dict], bool]:
     """Full pipeline: scene-detect candidate frames ONCE, run the combined
     image+header vision pass ONCE, then resolve each detection. "clean"
-    overlays (a self-contained rectangle) get cropped directly; "collage"
-    overlays (a background graphic the creator's body is composited over, so
-    no crop is clean) get a web-searched link to a similar image instead —
-    all collage descriptions are searched in one batched call. Returns
-    (reference_images, text_headers):
+    overlays (a self-contained rectangle) get cropped directly. "collage"
+    overlays (a background graphic the creator's own body is composited over,
+    so no crop is ever clean) aren't matched to anything specific — they just
+    flip has_collage_background, which gets the creator pointed at the shared
+    General Elements Drive instead. Returns
+    (reference_images, text_headers, has_collage_background):
       reference_images: [{"type": "clean", "bytes":, "caption":, "timestamp":, "original_context":}, ...]
-                      or [{"type": "collage", "link":, "caption":, "timestamp":, "original_context":}, ...]
       text_headers: [{"text":, "timestamp":, "original_context":}, ...]
-    Both empty on any failure (including no video_path) — never blocks the
+    Empty/False on any failure (including no video_path) — never blocks the
     main brief/publish flow."""
     if not video_path:
-        return [], []
+        return [], [], False
     try:
         with tempfile.TemporaryDirectory() as frames_dir:
             frames = extract_scene_frames(video_path, frames_dir)
@@ -727,25 +689,18 @@ def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tup
             image_dets = dedupe_detections(image_dets)
             header_dets = dedupe_headers(header_dets)
 
-            collage_idx = [i for i, d in enumerate(image_dets) if d["type"] == "collage"]
-            links = find_similar_image_links([image_dets[i]["description"] for i in collage_idx])
-            collage_links = {collage_idx[i]: url for i, url in links.items()}
+            has_collage_background = any(d["type"] == "collage" for d in image_dets)
 
-            reference_images = []
-            for i, d in enumerate(image_dets):
-                item = {
-                    "type": d["type"],
+            reference_images = [
+                {
+                    "type": "clean",
+                    "bytes": crop_region(d["path"], d["box"]),
                     "caption": d["description"],
                     "timestamp": d["timestamp"],
                     "original_context": context_at_timestamp(segments or [], d["timestamp"]),
                 }
-                if d["type"] == "collage":
-                    if i not in collage_links:
-                        continue  # no usable web match found — drop rather than post a broken/misleading item
-                    item["link"] = collage_links[i]
-                else:
-                    item["bytes"] = crop_region(d["path"], d["box"])
-                reference_images.append(item)
+                for d in image_dets if d["type"] == "clean"
+            ]
 
             text_headers = [
                 {
@@ -755,10 +710,10 @@ def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tup
                 }
                 for h in header_dets
             ]
-            return reference_images, text_headers
+            return reference_images, text_headers, has_collage_background
     except Exception as e:
         print(f"  [overlays] pipeline failed: {e}")
-        return [], []
+        return [], [], False
 
 
 def transcribe_audio(audio_path: str) -> dict:
@@ -1344,7 +1299,7 @@ def create_notion_comment_with_image(block_id: str, image_bytes: bytes, token: s
         return False
 
 
-def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "", reference_images: list[dict] = None, text_headers: list[dict] = None) -> str:
+def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "", reference_images: list[dict] = None, text_headers: list[dict] = None, has_collage_background: bool = False) -> str:
     token = TF_NOTION_TOKEN if tag == 'TF' else TV_NOTION_TOKEN
     parent_id = TF_PAGE_ID if tag == 'TF' else TV_PAGE_ID
 
@@ -1475,14 +1430,18 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
         for line_idx, match in image_matches.items():
             if line_idx >= len(adapted_script_blocks):
                 continue
-            block_id = adapted_script_blocks[line_idx]["id"]
-            img = match["image"]
-            if img.get("type") == "collage":
-                # Creator's own body covers part of this background — no crop is clean,
-                # so link to a similar image found on the web instead of an upload.
-                create_notion_link_comment(block_id, "Reference (similar background)", img["link"], token)
-            else:
-                create_notion_comment_with_image(block_id, img["bytes"], token)
+            create_notion_comment_with_image(adapted_script_blocks[line_idx]["id"], match["image"]["bytes"], token)
+
+        # Background-collage overlays aren't matched to a specific line — the
+        # creator's own body always covers part of them, so no crop is usable.
+        # Point to the shared drive once, on the script's first line.
+        if has_collage_background and adapted_script_blocks:
+            create_notion_link_comment(
+                adapted_script_blocks[0]["id"],
+                "Use images from the General Elements Drive",
+                GENERAL_ELEMENTS_DRIVE_URL,
+                token
+            )
 
         # Comment "Header: N. Title" on each detected list-item announcement line.
         for line_idx, header_text in list_headers.items():
@@ -1598,6 +1557,7 @@ def process_video(url: str, tag: str) -> dict:
     transcript = ""
     reference_images = []
     text_headers = []
+    has_collage_background = False
 
     # Fathom: try to get transcript directly from the page (faster, no download)
     if "fathom.video" in url:
@@ -1613,7 +1573,7 @@ def process_video(url: str, tag: str) -> dict:
             # Must run inside the tmpdir block — the downloaded video file
             # gets deleted as soon as this "with" exits.
             video_path = find_downloaded_video(tmpdir)
-            reference_images, text_headers = extract_overlays(video_path, transcript_data.get("segments"))
+            reference_images, text_headers, has_collage_background = extract_overlays(video_path, transcript_data.get("segments"))
 
     if tag == "TB":
         handle = extract_handle_from_url(url)
@@ -1623,7 +1583,7 @@ def process_video(url: str, tag: str) -> dict:
         return {"url": page_url, "hook": hook}
 
     brief = generate_brief(transcript, url, tag=tag)
-    page_url = publish_to_notion(brief, tag, url, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
+    page_url = publish_to_notion(brief, tag, url, transcript=transcript, reference_images=reference_images, text_headers=text_headers, has_collage_background=has_collage_background)
 
     hook = ""
     for line in brief.split('\n'):
@@ -1647,10 +1607,10 @@ def process_video_file(file_path: str, tag: str, original_filename: str) -> dict
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
 
-    reference_images, text_headers = extract_overlays(file_path, transcript_data.get("segments"))
+    reference_images, text_headers, has_collage_background = extract_overlays(file_path, transcript_data.get("segments"))
 
     brief = generate_brief(transcript, original_filename)
-    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
+    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers, has_collage_background=has_collage_background)
 
     hook = ""
     for line in brief.split('\n'):
