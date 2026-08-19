@@ -486,22 +486,53 @@ def find_downloaded_video(tmpdir: str) -> str | None:
     return max(candidates, key=os.path.getsize)
 
 
-def extract_scene_frames(video_path: str, out_dir: str, max_frames: int = 16) -> list[tuple[str, float]]:
-    """Pulls one frame per scene change (where an inserted image is most
-    likely to appear/disappear) plus the very first frame."""
-    pattern = os.path.join(out_dir, "frame_%03d.jpg")
+def extract_scene_frames(video_path: str, out_dir: str, max_frames: int = 28) -> list[tuple[str, float]]:
+    """Pulls candidate frames two ways and merges them, since an inserted
+    image doesn't always register as a hard scene cut (a small inset popping
+    in over a still-rolling shot can score well under ffmpeg's threshold):
+    1) One frame per scene change (threshold lowered from the original 0.25
+       — that missed subtler transitions) plus the very first frame.
+    2) A fixed-interval frame every 3s, as a floor of temporal coverage
+       regardless of what the scene-change detector catches.
+    If the combined total exceeds max_frames, thin evenly by TIME (not by
+    list position) so the reduction doesn't cluster all the drops in one
+    part of the video."""
+    scene_pattern = os.path.join(out_dir, "scene_%04d.jpg")
     result = subprocess.run(
         ["ffmpeg", "-i", video_path, "-vf",
-         "select='eq(n,0)+gt(scene,0.25)',showinfo", "-vsync", "vfr", pattern, "-y"],
+         "select='eq(n,0)+gt(scene,0.12)',showinfo", "-vsync", "vfr", scene_pattern, "-y"],
         capture_output=True, text=True
     )
-    timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
-    frames = sorted(glob.glob(os.path.join(out_dir, "frame_*.jpg")))
-    paired = list(zip(frames, timestamps)) if len(timestamps) == len(frames) else [(f, 0.0) for f in frames]
+    scene_timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result.stderr)]
+    scene_frames = sorted(glob.glob(os.path.join(out_dir, "scene_*.jpg")))
+    scene_paired = (
+        list(zip(scene_frames, scene_timestamps))
+        if len(scene_timestamps) == len(scene_frames) else [(f, 0.0) for f in scene_frames]
+    )
+
+    interval_pattern = os.path.join(out_dir, "interval_%04d.jpg")
+    result2 = subprocess.run(
+        ["ffmpeg", "-i", video_path, "-vf", "fps=1/3,showinfo", "-vsync", "vfr", interval_pattern, "-y"],
+        capture_output=True, text=True
+    )
+    interval_timestamps = [float(m) for m in re.findall(r"pts_time:([\d.]+)", result2.stderr)]
+    interval_frames = sorted(glob.glob(os.path.join(out_dir, "interval_*.jpg")))
+    interval_paired = (
+        list(zip(interval_frames, interval_timestamps))
+        if len(interval_timestamps) == len(interval_frames) else [(f, 0.0) for f in interval_frames]
+    )
+
+    paired = sorted(scene_paired + interval_paired, key=lambda p: p[1])
 
     if len(paired) > max_frames:
-        step = len(paired) / max_frames
-        paired = [paired[int(i * step)] for i in range(max_frames)]
+        duration = paired[-1][1] - paired[0][1] or 1.0
+        step = duration / max_frames
+        thinned, next_t = [], paired[0][1]
+        for f, ts in paired:
+            if ts >= next_t:
+                thinned.append((f, ts))
+                next_t = ts + step
+        paired = thinned
 
     return paired
 
@@ -634,7 +665,7 @@ def dedupe_detections(detections: list[dict]) -> list[dict]:
     kept = []
     for d in sorted(detections, key=lambda x: x["timestamp"]):
         dup = next((k for k in kept
-                    if abs(k["timestamp"] - d["timestamp"]) < 5
+                    if abs(k["timestamp"] - d["timestamp"]) < 10
                     and k["description"][:25].lower() == d["description"][:25].lower()), None)
         if not dup:
             kept.append(d)
@@ -660,7 +691,7 @@ def dedupe_headers(headers: list[dict]) -> list[dict]:
     kept = []
     for h in sorted(headers, key=lambda x: x["timestamp"]):
         dup = next((k for k in kept
-                    if abs(k["timestamp"] - h["timestamp"]) < 5
+                    if abs(k["timestamp"] - h["timestamp"]) < 10
                     and k["text"][:25].lower() == h["text"][:25].lower()), None)
         if not dup:
             kept.append(h)
