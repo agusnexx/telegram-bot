@@ -506,15 +506,19 @@ def extract_scene_frames(video_path: str, out_dir: str, max_frames: int = 16) ->
     return paired
 
 
-def detect_reference_images(frames: list[tuple[str, float]]) -> list[dict]:
-    """Asks Claude which sampled frames contain an inserted reference image
-    (a photo/meme/screenshot pasted into the video) as opposed to the
-    creator's own camera view. Returns [{path, timestamp, region, description}]."""
+def detect_overlays(frames: list[tuple[str, float]]) -> tuple[list[dict], list[dict]]:
+    """Single vision pass per frame batch — detects both (a) inserted reference
+    images/photos overlaid on the video and (b) on-screen text title/header
+    cards, in one call instead of two (halves vision-token cost, since each
+    frame's image bytes would otherwise be sent twice). Uses Haiku — this is
+    mechanical classification, not writing, so the cheaper model is enough.
+    Returns (image_detections, header_detections)."""
     if not frames:
-        return []
+        return [], []
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    detections = []
+    image_detections = []
+    header_detections = []
 
     for batch_start in range(0, len(frames), 6):
         batch = frames[batch_start:batch_start + 6]
@@ -525,51 +529,59 @@ def detect_reference_images(frames: list[tuple[str, float]]) -> list[dict]:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
             content.append({"type": "text", "text": f"Frame {i} (t={ts:.1f}s)"})
         content.append({"type": "text", "text": (
-            "For each numbered frame above, tell me if it contains an inserted reference "
-            "image (a photo, meme, screenshot, or graphic pasted into the video) that is "
-            "NOT the creator's own camera view of themselves or their room. These overlays "
-            "can be any size, position, AND aspect ratio — a small corner box, a strip across "
-            "the top or bottom (sometimes two side-by-side stills in that strip), or a large "
-            "centered image. Many of these are wide/landscape movie stills — do not assume "
-            "they're the same tall/vertical shape as the video frame itself; trace their own "
-            "actual left/right/top/bottom edges, whatever shape that turns out to be. If a "
-            "still is letterboxed (black/gray bars above and below it), the box must exclude "
-            "those bars entirely and hug only the actual photo content.\n\n"
-            "Reply with ONLY a JSON array, one entry per frame that HAS an overlay "
-            "(skip frames with no overlay entirely). \"box\" is the TIGHT bounding box around "
-            "ONLY the inserted image's actual pixel content — err slightly INSIDE the true edge "
-            "rather than outside it, so nothing but the photo itself is included: no decorative "
-            "card border/frame/rounded-corner background, no letterbox bars, no sliver of the "
-            "creator's own camera view. Coordinates are fractions of the frame's width/height "
-            "(0.0 = left/top edge, 1.0 = right/bottom edge). If there are two stills side by "
-            "side, box should cover both together, still excluding any shared border around them:\n"
-            '[{"frame": 0, "box": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.3}, '
-            '"description": "short description of the image"}]\n'
-            "If no frame has an overlay, reply with []."
+            "For each numbered frame above, look for TWO separate kinds of overlay — a frame "
+            "can have one, both, or neither:\n\n"
+            "1) INSERTED REFERENCE IMAGE — a photo, meme, screenshot, or graphic pasted into "
+            "the video that is NOT the creator's own camera view. Any size/position/aspect "
+            "ratio — a small corner box, a strip with one or two stills, a large centered "
+            "image, or a full-frame background collage. Many stills are wide/landscape — trace "
+            "their own actual edges, don't assume they match the vertical frame. Classify its "
+            "\"type\":\n"
+            "   - \"clean\": a self-contained rectangle that can be cropped out on its own "
+            "without cutting into anything else.\n"
+            "   - \"collage\": a full-frame background graphic the creator's own body/face is "
+            "composited ON TOP OF — cropping would always cut into the creator, so it can't be "
+            "extracted cleanly. If the creator overlaps the graphic, it's \"collage\" no matter "
+            "how big the graphic is.\n"
+            "   \"box\" is the TIGHT bounding box around ONLY the inserted image's actual pixel "
+            "content (approximate is fine for \"collage\" — it won't be used for cropping) — err "
+            "slightly INSIDE the true edge, excluding any decorative card border, letterbox "
+            "bars, or sliver of the creator. Coordinates are fractions of the frame's "
+            "width/height (0.0 = left/top edge, 1.0 = right/bottom edge). If two stills sit "
+            "side by side, one box should cover both, still excluding any shared border.\n\n"
+            "2) ON-SCREEN TEXT TITLE/HEADER — big bold text graphics burned into the video (a "
+            "title card, numbered-list intro, section header), as opposed to small captions, "
+            "UI chrome, or auto-generated word-by-word subtitles.\n\n"
+            "Reply with ONLY a JSON object with two arrays (each entry only for a frame that "
+            "actually has that kind of overlay — omit frames with neither):\n"
+            '{"images": [{"frame": 0, "type": "clean", "box": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.3}, '
+            '"description": "short description, detailed enough to search for online if needed"}], '
+            '"headers": [{"frame": 0, "text": "exact text shown, as written, including any subtitle line under it"}]}\n'
+            "If a category is empty across all frames, use an empty array for it."
         )})
 
         try:
             message = client.messages.create(
-                model="claude-opus-5",
+                model="claude-haiku-4-5",
                 max_tokens=2048,
-                output_config={"effort": "low"},
                 messages=[{"role": "user", "content": content}]
             )
             text = next((b.text for b in message.content if b.type == "text"), "")
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-            batch_detections = json.loads(match.group(0)) if match else []
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            parsed = json.loads(match.group(0)) if match else {}
         except Exception as e:
-            print(f"  [reference-images error] batch {batch_start}: {e}")
-            batch_detections = []
+            print(f"  [overlay-detection error] batch {batch_start}: {e}")
+            parsed = {}
 
-        for d in batch_detections:
+        for d in parsed.get("images", []):
             idx = d.get("frame")
             if idx is None or not (0 <= idx < len(batch)):
                 continue
             path, ts = batch[idx]
             box = d.get("box") or {}
-            detections.append({
+            image_detections.append({
                 "path": path, "timestamp": ts,
+                "type": d.get("type") if d.get("type") in ("clean", "collage") else "clean",
                 "box": (
                     float(box.get("x0", 0.0)), float(box.get("y0", 0.0)),
                     float(box.get("x1", 1.0)), float(box.get("y1", 1.0)),
@@ -577,7 +589,14 @@ def detect_reference_images(frames: list[tuple[str, float]]) -> list[dict]:
                 "description": d.get("description", "")
             })
 
-    return detections
+        for d in parsed.get("headers", []):
+            idx = d.get("frame")
+            if idx is None or not (0 <= idx < len(batch)):
+                continue
+            _, ts = batch[idx]
+            header_detections.append({"timestamp": ts, "text": d.get("text", "")})
+
+    return image_detections, header_detections
 
 
 def crop_region(image_path: str, box: tuple[float, float, float, float]) -> bytes:
@@ -590,9 +609,10 @@ def crop_region(image_path: str, box: tuple[float, float, float, float]) -> byte
     x0, y0, x1, y1 = box
     if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
         x0, y0, x1, y1 = 0.0, 0.0, 1.0, 1.0  # malformed box from the model — fall back to full frame
-    # Shrink slightly inward — the model's box tends to hug the true edge closely
-    # rather than overshoot it, so err on cropping a bit tighter, not looser.
-    erode_x, erode_y = (x1 - x0) * 0.03, (y1 - y0) * 0.03
+    # Shrink inward — the model's box tends to run a bit loose, leaving slivers of
+    # the creator's own camera view or the video's own edges in the crop. Erring
+    # tighter (losing a thin margin of the actual overlay) beats bleed-through.
+    erode_x, erode_y = (x1 - x0) * 0.07, (y1 - y0) * 0.07
     x0, y0, x1, y1 = x0 + erode_x, y0 + erode_y, x1 - erode_x, y1 - erode_y
     cropped = img.crop((int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)))
     buf = io.BytesIO()
@@ -623,88 +643,53 @@ def context_at_timestamp(segments: list[dict], ts: float) -> str:
     return min(segments, key=lambda s: min(abs(s["start"] - ts), abs(s["end"] - ts)))["text"]
 
 
-def extract_reference_images(video_path: str | None, segments: list[dict] = None) -> list[dict]:
-    """Full pipeline: scene-detect candidate frames, ask Claude which ones
-    have an inserted reference image, crop those, dedupe. Returns
-    [{"bytes": jpg_bytes, "caption": str, "timestamp": float, "original_context": str}, ...]
-    — empty list on any failure (including no video_path), never blocks the main brief/publish flow."""
-    if not video_path:
-        return []
+def find_similar_image_links(descriptions: list[str]) -> dict[int, str]:
+    """"collage"-type overlays can't be cropped cleanly (the creator's own body
+    covers part of them), so instead of a pixel crop, search the web for a
+    similar image the creator could actually source and use. Batches ALL
+    descriptions from one video into a SINGLE web-search call instead of one
+    call per image — cuts the (expensive) agentic search overhead by however
+    many collage images the video has. Returns {index: url} for whichever
+    descriptions got a usable match; a missing index means no match found."""
+    if not descriptions:
+        return {}
     try:
-        with tempfile.TemporaryDirectory() as frames_dir:
-            frames = extract_scene_frames(video_path, frames_dir)
-            detections = dedupe_detections(detect_reference_images(frames))
-            return [
-                {
-                    "bytes": crop_region(d["path"], d["box"]),
-                    "caption": d["description"],
-                    "timestamp": d["timestamp"],
-                    "original_context": context_at_timestamp(segments or [], d["timestamp"]),
-                }
-                for d in detections
-            ]
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        numbered = "\n".join(f"{i}. {d}" for i, d in enumerate(descriptions))
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1536,
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3 * len(descriptions)}],
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"For each numbered image description below, search the web (Pinterest, "
+                    f"Google Images, stock/art sites) for a similar image someone could "
+                    f"actually open and reuse as a background/reference graphic:\n{numbered}\n\n"
+                    "Reply with ONLY a JSON array, one entry per description that found a "
+                    "usable match (omit any that found nothing relevant):\n"
+                    '[{"index": 0, "url": "https://..."}]'
+                )
+            }]
+        )
+        # Web search runs as multiple tool_use/tool_result turns inline in one
+        # response — several text blocks can appear (preamble, then the real
+        # answer after seeing results), so take the LAST one, not the first.
+        text_blocks = [b.text for b in message.content if b.type == "text"]
+        text = text_blocks[-1].strip() if text_blocks else ""
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        raw = json.loads(m.group(0)) if m else []
     except Exception as e:
-        print(f"  [reference-images] pipeline failed: {e}")
-        return []
+        print(f"  [image-search error] {e}")
+        return {}
 
-
-# ── On-screen Text Headers ──────────────────────────────────────────────────────
-# Detects large title/header text burned into the video (e.g. "10/10 Habits To
-# Build Extreme Aura") — a visual overlay, not a spoken script line. Distinct
-# from Reference Images: this looks for TEXT graphics, not inserted photos.
-
-def detect_text_headers(frames: list[tuple[str, float]]) -> list[dict]:
-    """Asks Claude which sampled frames show a large on-screen text title/header
-    card — text overlaid/burned into the video as a graphic — as opposed to
-    small captions, UI elements, or auto-generated subtitles. Returns
-    [{"timestamp": float, "text": str}]."""
-    if not frames:
-        return []
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    headers = []
-
-    for batch_start in range(0, len(frames), 6):
-        batch = frames[batch_start:batch_start + 6]
-        content = []
-        for i, (path, ts) in enumerate(batch):
-            with open(path, "rb") as f:
-                b64 = base64.standard_b64encode(f.read()).decode()
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
-            content.append({"type": "text", "text": f"Frame {i} (t={ts:.1f}s)"})
-        content.append({"type": "text", "text": (
-            "For each numbered frame above, tell me if it contains a large on-screen TEXT "
-            "TITLE/HEADER card — big bold text graphics burned into the video (like a video "
-            "title card, a numbered-list intro, or a section header), as opposed to small "
-            "captions, UI chrome, or auto-generated word-by-word subtitles.\n\n"
-            "Reply with ONLY a JSON array, one entry per frame that HAS a title/header card "
-            "(skip frames with no such text entirely):\n"
-            '[{"frame": 0, "text": "exact text shown, as written, including any subtitle line under it"}]\n'
-            "If no frame has one, reply with []."
-        )})
-
-        try:
-            message = client.messages.create(
-                model="claude-opus-5",
-                max_tokens=2048,
-                output_config={"effort": "low"},
-                messages=[{"role": "user", "content": content}]
-            )
-            text = next((b.text for b in message.content if b.type == "text"), "")
-            match = re.search(r"\[.*\]", text, re.DOTALL)
-            batch_headers = json.loads(match.group(0)) if match else []
-        except Exception as e:
-            print(f"  [text-header error] batch {batch_start}: {e}")
-            batch_headers = []
-
-        for d in batch_headers:
-            idx = d.get("frame")
-            if idx is None or not (0 <= idx < len(batch)):
-                continue
-            _, ts = batch[idx]
-            headers.append({"timestamp": ts, "text": d.get("text", "")})
-
-    return headers
+    result = {}
+    for r in raw:
+        idx, url = r.get("index"), r.get("url")
+        if idx is None or not url or not (0 <= idx < len(descriptions)):
+            continue
+        result[idx] = url
+    return result
 
 
 def dedupe_headers(headers: list[dict]) -> list[dict]:
@@ -720,29 +705,60 @@ def dedupe_headers(headers: list[dict]) -> list[dict]:
     return kept
 
 
-def extract_text_headers(video_path: str | None, segments: list[dict] = None) -> list[dict]:
-    """Full pipeline: scene-detect candidate frames, ask Claude which ones show
-    an on-screen title/header card, dedupe, attach original-transcript context
-    for matching against the adapted script later. Returns
-    [{"text": str, "timestamp": float, "original_context": str}, ...] —
-    empty list on any failure, never blocks the main brief/publish flow."""
+def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tuple[list[dict], list[dict]]:
+    """Full pipeline: scene-detect candidate frames ONCE, run the combined
+    image+header vision pass ONCE, then resolve each detection. "clean"
+    overlays (a self-contained rectangle) get cropped directly; "collage"
+    overlays (a background graphic the creator's body is composited over, so
+    no crop is clean) get a web-searched link to a similar image instead —
+    all collage descriptions are searched in one batched call. Returns
+    (reference_images, text_headers):
+      reference_images: [{"type": "clean", "bytes":, "caption":, "timestamp":, "original_context":}, ...]
+                      or [{"type": "collage", "link":, "caption":, "timestamp":, "original_context":}, ...]
+      text_headers: [{"text":, "timestamp":, "original_context":}, ...]
+    Both empty on any failure (including no video_path) — never blocks the
+    main brief/publish flow."""
     if not video_path:
-        return []
+        return [], []
     try:
         with tempfile.TemporaryDirectory() as frames_dir:
             frames = extract_scene_frames(video_path, frames_dir)
-            headers = dedupe_headers(detect_text_headers(frames))
-            return [
+            image_dets, header_dets = detect_overlays(frames)
+            image_dets = dedupe_detections(image_dets)
+            header_dets = dedupe_headers(header_dets)
+
+            collage_idx = [i for i, d in enumerate(image_dets) if d["type"] == "collage"]
+            links = find_similar_image_links([image_dets[i]["description"] for i in collage_idx])
+            collage_links = {collage_idx[i]: url for i, url in links.items()}
+
+            reference_images = []
+            for i, d in enumerate(image_dets):
+                item = {
+                    "type": d["type"],
+                    "caption": d["description"],
+                    "timestamp": d["timestamp"],
+                    "original_context": context_at_timestamp(segments or [], d["timestamp"]),
+                }
+                if d["type"] == "collage":
+                    if i not in collage_links:
+                        continue  # no usable web match found — drop rather than post a broken/misleading item
+                    item["link"] = collage_links[i]
+                else:
+                    item["bytes"] = crop_region(d["path"], d["box"])
+                reference_images.append(item)
+
+            text_headers = [
                 {
                     "text": h["text"],
                     "timestamp": h["timestamp"],
                     "original_context": context_at_timestamp(segments or [], h["timestamp"]),
                 }
-                for h in headers
+                for h in header_dets
             ]
+            return reference_images, text_headers
     except Exception as e:
-        print(f"  [text-headers] pipeline failed: {e}")
-        return []
+        print(f"  [overlays] pipeline failed: {e}")
+        return [], []
 
 
 def transcribe_audio(audio_path: str) -> dict:
@@ -806,30 +822,37 @@ def transcribe_audio(audio_path: str) -> dict:
 DEEPSTASH_INTEGRATION_RULES = """
 ## DEEPSTASH INTEGRATION RULES (TV scripts only)
 
-The Adapted Script MUST include a natural Deepstash integration. Follow these rules exactly:
+The Adapted Script MUST include a natural Deepstash integration. Don't reach for a
+stock phrase — actually read this specific script's content, topic, and voice first,
+then write the integration that fits THIS video, not a generic one that could be
+pasted into any script. Stay inside these constraints while you do:
 
-**WHEN:** In the last 20% of the script, after the problem is fully established.
+**WHEN:** In the last 20% of the script, after the problem is fully established —
+once the video has committed to a specific struggle/behavior, not before.
 
-**HOW TO INTRODUCE IT (use one of these phrases, word for word):**
-- "Here's what actually worked for me"
-- "The method that I found"
-- "What I've been using is this method"
-- "I use this method"
+**HOW TO INTRODUCE IT:** Write your own transition line into it, in this script's own
+voice and rhythm — something that would sound like a natural continuation of what was
+just said, not a bolted-on plug. It should read as the creator sharing what actually
+worked for them, in their own words for this topic.
 
-**WHAT TO SAY ABOUT THE APP (never name it, describe it functionally):**
-- "feeds me bite-sized ideas from actual books instead of brain-rotting content"
-- "simulates the scrolling feeling but for learning something new every day"
-- "same scrolling motion, but now I'm absorbing wisdom from books"
-- "same dopamine hit, but I'm actually learning something"
-- "point this at any book and get instant summaries"
+**WHAT TO SAY ABOUT THE APP:** Never name it. Describe what it actually does
+functionally, in language that fits this script's specific hook/problem — e.g. if the
+video is about doomscrolling, tie the description to that; if it's about information
+overload, tie it to that. The through-line to preserve: it delivers bite-sized ideas
+from real books, in a scrolling-feed format, so it captures the same habit/urge the
+video is about but redirects it toward something worth absorbing.
 
-**CONNECTION:** Always frame it as a direct REPLACEMENT of the bad behavior, not an addition:
-- Doomscrolling → scrolling that teaches you
-- Wasted screen time → screen time that builds your brain
+**CONNECTION:** Always frame it as a direct REPLACEMENT of the specific bad
+behavior/urge this script is about, not a generic addition — pick the replacement
+framing that actually matches what this video already established as the problem.
 
-**CTA:** End with: "Comment the word BOOK and I'll send you the method."
+**CTA:** End with a line that leads into: "Comment the word BOOK and I'll send you the
+method." The CTA text itself must stay exactly that (it's a working comment-automation
+trigger) — but the sentence(s) leading into it can be written to fit the script.
 
-**TONE:** Never slow down or change energy for the app moment. Same raw, urgent energy throughout.
+**TONE:** Never slow down or change energy for the app moment. Same energy as the rest
+of this specific script — match its actual register, don't default to "raw and urgent"
+if the script itself is calm, technical, or something else.
 """
 
 
@@ -1164,6 +1187,29 @@ def create_notion_text_comment(block_id: str, text: str, token: str) -> bool:
         return False
 
 
+def create_notion_link_comment(block_id: str, label: str, url: str, token: str) -> bool:
+    """Same as create_notion_text_comment but the URL portion is a real
+    hyperlink (clickable directly from the comment), not just plain text
+    Notion may or may not auto-linkify."""
+    try:
+        resp = requests.post(
+            "https://api.notion.com/v1/comments",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"},
+            json={
+                "parent": {"type": "block_id", "block_id": block_id},
+                "rich_text": [
+                    {"type": "text", "text": {"content": f"{label}: "}},
+                    {"type": "text", "text": {"content": url, "link": {"url": url}}}
+                ]
+            }
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"  [notion comment error] {e}")
+        return False
+
+
 def match_images_to_adapted_script(reference_images: list[dict], adapted_lines: list[str]) -> dict[int, dict]:
     """For each reference image (with its original-transcript context), asks Claude
     which line of the ADAPTED script covers that same moment, and the exact substring
@@ -1189,7 +1235,7 @@ def match_images_to_adapted_script(reference_images: list[dict], adapted_lines: 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
-            model="claude-opus-5", max_tokens=1024, output_config={"effort": "low"},
+            model="claude-haiku-4-5", max_tokens=1024,
             messages=[{"role": "user", "content": prompt}]
         )
         text = next((b.text for b in msg.content if b.type == "text"), "")
@@ -1237,7 +1283,7 @@ def match_headers_to_adapted_script(text_headers: list[dict], adapted_lines: lis
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         msg = client.messages.create(
-            model="claude-opus-5", max_tokens=1024, output_config={"effort": "low"},
+            model="claude-haiku-4-5", max_tokens=1024,
             messages=[{"role": "user", "content": prompt}]
         )
         text = next((b.text for b in msg.content if b.type == "text"), "")
@@ -1427,12 +1473,16 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
         # skipping), so there's no separate gallery — a failed post (e.g. API
         # error) is just logged, never surfaced as a visible fallback block.
         for line_idx, match in image_matches.items():
-            if line_idx < len(adapted_script_blocks):
-                create_notion_comment_with_image(
-                    adapted_script_blocks[line_idx]["id"],
-                    match["image"]["bytes"],
-                    token
-                )
+            if line_idx >= len(adapted_script_blocks):
+                continue
+            block_id = adapted_script_blocks[line_idx]["id"]
+            img = match["image"]
+            if img.get("type") == "collage":
+                # Creator's own body covers part of this background — no crop is clean,
+                # so link to a similar image found on the web instead of an upload.
+                create_notion_link_comment(block_id, "Reference (similar background)", img["link"], token)
+            else:
+                create_notion_comment_with_image(block_id, img["bytes"], token)
 
         # Comment "Header: N. Title" on each detected list-item announcement line.
         for line_idx, header_text in list_headers.items():
@@ -1563,8 +1613,7 @@ def process_video(url: str, tag: str) -> dict:
             # Must run inside the tmpdir block — the downloaded video file
             # gets deleted as soon as this "with" exits.
             video_path = find_downloaded_video(tmpdir)
-            reference_images = extract_reference_images(video_path, transcript_data.get("segments"))
-            text_headers = extract_text_headers(video_path, transcript_data.get("segments"))
+            reference_images, text_headers = extract_overlays(video_path, transcript_data.get("segments"))
 
     if tag == "TB":
         handle = extract_handle_from_url(url)
@@ -1598,8 +1647,7 @@ def process_video_file(file_path: str, tag: str, original_filename: str) -> dict
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
 
-    reference_images = extract_reference_images(file_path, transcript_data.get("segments"))
-    text_headers = extract_text_headers(file_path, transcript_data.get("segments"))
+    reference_images, text_headers = extract_overlays(file_path, transcript_data.get("segments"))
 
     brief = generate_brief(transcript, original_filename)
     page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
