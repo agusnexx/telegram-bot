@@ -667,29 +667,27 @@ def dedupe_headers(headers: list[dict]) -> list[dict]:
     return kept
 
 
-def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tuple[list[dict], list[dict], bool]:
+def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tuple[list[dict], list[dict]]:
     """Full pipeline: scene-detect candidate frames ONCE, run the combined
     image+header vision pass ONCE, then resolve each detection. "clean"
     overlays (a self-contained rectangle) get cropped directly. "collage"
     overlays (a background graphic the creator's own body is composited over,
-    so no crop is ever clean) aren't matched to anything specific — they just
-    flip has_collage_background, which gets the creator pointed at the shared
-    General Elements Drive instead. Returns
-    (reference_images, text_headers, has_collage_background):
+    so no crop is ever clean) are dropped — every brief already carries a
+    standing note pointing to the shared General Elements Drive for that
+    case (added unconditionally in publish_to_notion), so no per-video
+    signal is needed here. Returns (reference_images, text_headers):
       reference_images: [{"type": "clean", "bytes":, "caption":, "timestamp":, "original_context":}, ...]
       text_headers: [{"text":, "timestamp":, "original_context":}, ...]
-    Empty/False on any failure (including no video_path) — never blocks the
+    Both empty on any failure (including no video_path) — never blocks the
     main brief/publish flow."""
     if not video_path:
-        return [], [], False
+        return [], []
     try:
         with tempfile.TemporaryDirectory() as frames_dir:
             frames = extract_scene_frames(video_path, frames_dir)
             image_dets, header_dets = detect_overlays(frames)
             image_dets = dedupe_detections(image_dets)
             header_dets = dedupe_headers(header_dets)
-
-            has_collage_background = any(d["type"] == "collage" for d in image_dets)
 
             reference_images = [
                 {
@@ -710,10 +708,10 @@ def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tup
                 }
                 for h in header_dets
             ]
-            return reference_images, text_headers, has_collage_background
+            return reference_images, text_headers
     except Exception as e:
         print(f"  [overlays] pipeline failed: {e}")
-        return [], [], False
+        return [], []
 
 
 def transcribe_audio(audio_path: str) -> dict:
@@ -1299,7 +1297,7 @@ def create_notion_comment_with_image(block_id: str, image_bytes: bytes, token: s
         return False
 
 
-def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "", reference_images: list[dict] = None, text_headers: list[dict] = None, has_collage_background: bool = False) -> str:
+def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = "", reference_images: list[dict] = None, text_headers: list[dict] = None) -> str:
     token = TF_NOTION_TOKEN if tag == 'TF' else TV_NOTION_TOKEN
     parent_id = TF_PAGE_ID if tag == 'TF' else TV_PAGE_ID
 
@@ -1432,13 +1430,13 @@ def publish_to_notion(brief: str, tag: str, video_url: str, transcript: str = ""
                 continue
             create_notion_comment_with_image(adapted_script_blocks[line_idx]["id"], match["image"]["bytes"], token)
 
-        # Background-collage overlays aren't matched to a specific line — the
-        # creator's own body always covers part of them, so no crop is usable.
-        # Point to the shared drive once, on the script's first line.
-        if has_collage_background and adapted_script_blocks:
+        # Always leave this note on the script's first line — a permanent
+        # fallback pointer to the shared drive, independent of whether this
+        # particular video's background-collage detection fired.
+        if adapted_script_blocks:
             create_notion_link_comment(
                 adapted_script_blocks[0]["id"],
-                "Use images from the General Elements Drive",
+                "In case there are no background images, use the following from the General Elements Drive",
                 GENERAL_ELEMENTS_DRIVE_URL,
                 token
             )
@@ -1557,7 +1555,6 @@ def process_video(url: str, tag: str) -> dict:
     transcript = ""
     reference_images = []
     text_headers = []
-    has_collage_background = False
 
     # Fathom: try to get transcript directly from the page (faster, no download)
     if "fathom.video" in url:
@@ -1573,7 +1570,7 @@ def process_video(url: str, tag: str) -> dict:
             # Must run inside the tmpdir block — the downloaded video file
             # gets deleted as soon as this "with" exits.
             video_path = find_downloaded_video(tmpdir)
-            reference_images, text_headers, has_collage_background = extract_overlays(video_path, transcript_data.get("segments"))
+            reference_images, text_headers = extract_overlays(video_path, transcript_data.get("segments"))
 
     if tag == "TB":
         handle = extract_handle_from_url(url)
@@ -1583,7 +1580,7 @@ def process_video(url: str, tag: str) -> dict:
         return {"url": page_url, "hook": hook}
 
     brief = generate_brief(transcript, url, tag=tag)
-    page_url = publish_to_notion(brief, tag, url, transcript=transcript, reference_images=reference_images, text_headers=text_headers, has_collage_background=has_collage_background)
+    page_url = publish_to_notion(brief, tag, url, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
 
     hook = ""
     for line in brief.split('\n'):
@@ -1607,10 +1604,10 @@ def process_video_file(file_path: str, tag: str, original_filename: str) -> dict
         transcript_data = transcribe_audio(audio_path)
         transcript = transcript_data["content"]
 
-    reference_images, text_headers, has_collage_background = extract_overlays(file_path, transcript_data.get("segments"))
+    reference_images, text_headers = extract_overlays(file_path, transcript_data.get("segments"))
 
     brief = generate_brief(transcript, original_filename)
-    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers, has_collage_background=has_collage_background)
+    page_url = publish_to_notion(brief, tag, original_filename, transcript=transcript, reference_images=reference_images, text_headers=text_headers)
 
     hook = ""
     for line in brief.split('\n'):
