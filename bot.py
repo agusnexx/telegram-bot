@@ -578,17 +578,23 @@ def detect_overlays(frames: list[tuple[str, float]]) -> tuple[list[dict], list[d
             "   \"box\" is the TIGHT bounding box around ONLY the inserted image's actual pixel "
             "content (approximate is fine for \"collage\" — it won't be used for cropping) — err "
             "slightly INSIDE the true edge, excluding any decorative card border, letterbox "
-            "bars, or sliver of the creator. Coordinates are fractions of the frame's "
-            "width/height (0.0 = left/top edge, 1.0 = right/bottom edge). If two stills sit "
-            "side by side, one box should cover both, still excluding any shared border.\n\n"
+            "bars, or sliver of the creator. If a text title/caption (like a numbered-list label, "
+            "e.g. \"2. Create Something\") sits directly below or overlapping the image as part of "
+            "the same graphic, the box must stop above that text entirely — that text belongs "
+            "only to category 2 below, never inside an image's box, even by a couple pixels. "
+            "Coordinates are fractions of the frame's width/height (0.0 = left/top edge, 1.0 = "
+            "right/bottom edge). If two stills sit side by side, one box should cover both, "
+            "still excluding any shared border.\n\n"
             "2) ON-SCREEN TEXT TITLE/HEADER — big bold text graphics burned into the video (a "
             "title card, numbered-list intro, section header), as opposed to small captions, "
-            "UI chrome, or auto-generated word-by-word subtitles.\n\n"
+            "UI chrome, or auto-generated word-by-word subtitles. Also give \"y_start\": the "
+            "fraction of frame height (0.0 = top, 1.0 = bottom) where this text's top edge "
+            "begins — used to keep it separate from any image box above it.\n\n"
             "Reply with ONLY a JSON object with two arrays (each entry only for a frame that "
             "actually has that kind of overlay — omit frames with neither):\n"
             '{"images": [{"frame": 0, "type": "clean", "box": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.3}, '
             '"description": "short description, detailed enough to search for online if needed"}], '
-            '"headers": [{"frame": 0, "text": "exact text shown, as written, including any subtitle line under it"}]}\n'
+            '"headers": [{"frame": 0, "text": "exact text shown, as written, including any subtitle line under it", "y_start": 0.7}]}\n'
             "If a category is empty across all frames, use an empty array for it."
         )})
 
@@ -625,8 +631,12 @@ def detect_overlays(frames: list[tuple[str, float]]) -> tuple[list[dict], list[d
             idx = d.get("frame")
             if idx is None or not (0 <= idx < len(batch)):
                 continue
-            _, ts = batch[idx]
-            header_detections.append({"timestamp": ts, "text": d.get("text", "")})
+            path, ts = batch[idx]
+            y_start = d.get("y_start")
+            header_detections.append({
+                "path": path, "timestamp": ts, "text": d.get("text", ""),
+                "y_start": float(y_start) if y_start is not None else None,
+            })
 
     return image_detections, header_detections
 
@@ -648,7 +658,7 @@ def crop_region(image_path: str, box: tuple[float, float, float, float]) -> byte
     # (they're usually framed low in the shot), so it gets cropped harder than
     # the other three sides.
     width, height = x1 - x0, y1 - y0
-    erode_side, erode_bottom = width * 0.08, height * 0.20
+    erode_side, erode_bottom = width * 0.08, height * 0.12
     ex0, ey0, ex1 = x0 + erode_side, y0 + height * 0.08, x1 - erode_side
     ey1 = y1 - erode_bottom
     if ex1 > ex0 and ey1 > ey0:  # box too small to erode without inverting — use it as-is
@@ -720,16 +730,42 @@ def extract_overlays(video_path: str | None, segments: list[dict] = None) -> tup
             image_dets = dedupe_detections(image_dets)
             header_dets = dedupe_headers(header_dets)
 
-            reference_images = [
-                {
+            # A header detected around the SAME moment as a "clean" image is a
+            # second, independent signal for where that image's real bottom
+            # edge is — the model's own image box sometimes runs long enough
+            # to swallow the header text underneath it even after prompting
+            # against exactly that, so clamp the box to stop just above it.
+            # Matched by timestamp proximity, not the exact sampled frame file
+            # — scene-cut and interval sampling rarely land on the same frame
+            # for what's still the same on-screen moment.
+            headers_with_y = [h for h in header_dets if h.get("y_start") is not None]
+
+            reference_images = []
+            for d in image_dets:
+                if d["type"] != "clean":
+                    continue
+                box = d["box"]
+                nearby_header_tops = [
+                    h["y_start"] for h in headers_with_y
+                    if abs(h["timestamp"] - d["timestamp"]) < 3 and h["y_start"] > box[1]
+                ]
+                if nearby_header_tops:
+                    # The model's own box bottom AND the header's y_start both run
+                    # systematically low in these composited frames (measured: real
+                    # edge at ~0.26 came back as box y1=0.4 and header y_start=0.41
+                    # in the same frame) — so don't just nudge the header position
+                    # down slightly, pull well above it: only trust 55% of the way
+                    # from the image's own top edge to the reported header start.
+                    header_top = min(nearby_header_tops)
+                    clamp_y1 = box[1] + (header_top - box[1]) * 0.45
+                    box = (box[0], box[1], box[2], min(box[3], max(clamp_y1, box[1] + 0.05)))
+                reference_images.append({
                     "type": "clean",
-                    "bytes": crop_region(d["path"], d["box"]),
+                    "bytes": crop_region(d["path"], box),
                     "caption": d["description"],
                     "timestamp": d["timestamp"],
                     "original_context": context_at_timestamp(segments or [], d["timestamp"]),
-                }
-                for d in image_dets if d["type"] == "clean"
-            ]
+                })
 
             text_headers = [
                 {
